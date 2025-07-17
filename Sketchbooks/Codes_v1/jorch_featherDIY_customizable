@@ -9,9 +9,6 @@
 // Set to false for rapid start
 #define DELAY_START false
 
-// Set to false for burst
-#define BURST_SAMPLING true
-
 // ===========================
 // LIBRARIES
 // ===========================
@@ -33,12 +30,8 @@
 // ===========================
 float sampleFreq = 16; // Sampling frequency in Hz
 
-// Edit for BURST sampling ONLY
-#if BURST_SAMPLING
-  float writeMinutes = 0.25; // Number of minutes to sample
-  float sleepMinutes = 0.5; // Number of minutes to sleep
-#endif
-unsigned long samplesToWrite,sleepDuration;
+// Circular buffer size - adjust based on available memory and sampling frequency
+#define BUFFER_SIZE 50
 
 // Edit for DELAY start ONLY
 #if DELAY_START // Preferred date
@@ -62,6 +55,17 @@ unsigned long samplesToWrite,sleepDuration;
 #define cardSelect 4 // Chip select pin for SD card // DO NOT MODIFY
 
 // ===========================
+// DATA STRUCTURE FOR CIRCULAR BUFFER
+// ===========================
+struct DataPoint {
+  DateTime now;
+  float pressure;
+  float temperature;
+  float batteryVoltage;
+  bool valid; // Flag to indicate if this data point is valid
+};
+
+// ===========================
 // INITIALIZING GLOBAL VARIABLES
 // ===========================
 #if USE_NEW_SENSOR
@@ -78,14 +82,15 @@ const int maxADCValue = 1024; // The max ADC value for a 10-bit ADC (0-1023)
 
 const float referenceVoltage = 3.3; // Reference voltage for the ADC (3.3V or 5V depending on your setup)
 
-String outputString = String(""); // Empty string for intermittent SD logging
+// Circular buffer variables
+volatile DataPoint dataBuffer[BUFFER_SIZE];
+volatile int bufferHead = 0; // Points to next write position
+volatile int bufferTail = 0; // Points to next read position
+volatile int bufferCount = 0; // Number of items in buffer
+volatile bool bufferOverflow = false; // Flag to indicate buffer overflow
 
-int linesStored = 1; // Tracks how many lines have been written to the outputString
-int samplesTaken = 1; // Tracks how many samples have been logged in the current burst session
 int waitingBlinks = 1; // Used to count LED blinks while the device is waiting to start sampling
 int currYear,currMonth,currDay,currHour,currMin,currSec; // Variables for different time elements
-
-volatile boolean logReady = true; // Signals when it's time to log data
 
 char fileName[15]; // Creates a char array of size 15 for an easily modifiable file name
 
@@ -119,6 +124,52 @@ void error (uint8_t errno) {
 }
 
 // ===========================
+// CIRCULAR BUFFER FUNCTIONS
+// ===========================
+// Add data point to circular buffer (called from interrupt)
+void addToBuffer(DateTime now, float pressure, float temperature, float batteryVoltage) {
+  // Check if buffer is full
+  if (bufferCount >= BUFFER_SIZE) {
+    bufferOverflow = true;
+    // Move tail forward to make room (overwrite oldest data)
+    bufferTail = (bufferTail + 1) % BUFFER_SIZE;
+  } else {
+    bufferCount++;
+  }
+  
+  // Add new data point
+  dataBuffer[bufferHead].now = now;
+  dataBuffer[bufferHead].pressure = pressure;
+  dataBuffer[bufferHead].temperature = temperature;
+  dataBuffer[bufferHead].batteryVoltage = batteryVoltage;
+  dataBuffer[bufferHead].valid = true;
+  
+  // Move head to next position
+  bufferHead = (bufferHead + 1) % BUFFER_SIZE;
+}
+
+// Read data point from circular buffer (called from main loop)
+bool readFromBuffer(DataPoint* data) {
+  if (bufferCount == 0) {
+    return false; // Buffer is empty
+  }
+  
+  // Copy data from buffer - handle volatile DateTime properly
+  data->now = DateTime(dataBuffer[bufferTail].now.unixtime());
+  data->pressure = dataBuffer[bufferTail].pressure;
+  data->temperature = dataBuffer[bufferTail].temperature;
+  data->batteryVoltage = dataBuffer[bufferTail].batteryVoltage;
+  data->valid = dataBuffer[bufferTail].valid;
+  
+  // Mark as invalid and move tail forward
+  dataBuffer[bufferTail].valid = false;
+  bufferTail = (bufferTail + 1) % BUFFER_SIZE;
+  bufferCount--;
+  
+  return true;
+}
+
+// ===========================
 // SETUP - SENSOR, TIMESTAMP, SD CARD
 // ===========================
 void setup() {
@@ -140,11 +191,6 @@ void setup() {
 
   Serial.print("Initializing SD card...");
 
-  #if BURST_SAMPLING
-    samplesToWrite = writeMinutes * 60 * sampleFreq; // Number of samples to take for each sampling session
-    sleepDuration = sleepMinutes * 60 * 1000UL; // Convert sleepMinutes to milliseconds
-  #endif
-
   #if DELAY_START
     DateTime now = rtc.now();
     currYear = now.year(); currMonth = now.month(); currDay = now.day();
@@ -155,6 +201,11 @@ void setup() {
     Serial.println("Card Failed or Not Present");
     error(1);
     return;
+  }
+  
+  // Initialize circular buffer
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    dataBuffer[i].valid = false;
   }
   
   float sampleTime = (1/sampleFreq)*1000000; // Convert sampling frequency to microseconds
@@ -198,75 +249,49 @@ void loop() {
   if (!DELAY_START || ((currYear >= startYear) && (currMonth >= startMonth) && (currDay >= startDay) && 
      (currHour >= startHour) && (currMin >= startMinute))) {
 
-    // Write data for specified duration or continuously sample
-    if (!BURST_SAMPLING || samplesTaken < samplesToWrite) {
-      int sensorValue = analogRead(batteryPin); // Read the raw ADC value
-      float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue; // Calculate the battery voltage; replace with the actual voltage divider ratio as needed
+    // Check for buffer overflow warning
+    if (bufferOverflow) {
+      Serial.println("WARNING: Buffer overflow detected - some data may have been lost!");
+      bufferOverflow = false;
+    }
 
-      // If using a voltage divider, multiply by the ratio to get the actual voltage
-      // e.g., if using a 2:1 divider, multiply by 2
-      float actualBatteryVoltage = batteryVoltage * 2;  // Adjust multiplier based on your divider
-
-      // Write data to SD and reset after 11 lines
-      if (linesStored == 11) {
-        Serial.print(outputString);
-        outputFile.print(outputString);
-        outputFile.flush();
-        outputString.replace(outputString, "");
-        linesStored = linesStored - 10;
-      }
-
-      if (logReady == true) {
-        DateTime now = rtc.now();
-        currYear = now.year(); currMonth = now.month(); currDay = now.day();
-        currHour = now.hour(); currMin = now.minute(); currSec = now.second();
-
-        float temp2, pres;
-        #if USE_NEW_SENSOR
-          newSensor.read();
-          temp2 = newSensor.temperature();
-          pres = newSensor.pressure();
-        #else
-          temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
-          pres = oldSensor.getPressure(ADC_4096);
-        #endif
-
-        digitalWrite(8, HIGH); // Turns green LED light ON to verify that code has processed through to this point
-
-        // Write data to output string
-        outputString += (currYear);
-        outputString += ('/');
-        outputString += (currMonth);
-        outputString += ('/');
-        outputString += (currDay);
-        outputString += (" ");
-        outputString += (currHour);
-        outputString += (':');
-        outputString += (currMin);
-        outputString += (':');
-        outputString += (currSec);
-        outputString += (",");
-        outputString += (pres);
-        outputString += (",");
-        outputString += (temp2);
-        outputString += (",");
-        outputString += (actualBatteryVoltage);
-        outputString += ("\r\n");
+    // Only write to SD card if buffer has at least 12 data points
+    if (bufferCount >= 12) {
+      Serial.println("Buffer threshold reached - starting SD write...");
+      
+      // Process data from circular buffer until empty
+      DataPoint data;
+      int writeCount = 0;
+      while (readFromBuffer(&data)) {
+        // Write data to SD card
+        outputFile.print(data.now.year());
+        outputFile.print('/');
+        outputFile.print(data.now.month());
+        outputFile.print('/');
+        outputFile.print(data.now.day());
+        outputFile.print(" ");
+        outputFile.print(data.now.hour());
+        outputFile.print(':');
+        outputFile.print(data.now.minute());
+        outputFile.print(':');
+        outputFile.print(data.now.second());
+        outputFile.print(",");
+        outputFile.print(data.pressure);
+        outputFile.print(",");
+        outputFile.print(data.temperature);
+        outputFile.print(",");
+        outputFile.print(data.batteryVoltage);
+        outputFile.println();
+        
+        writeCount++;
         Serial.println("I am logging");
-        logReady = false;
-        linesStored = linesStored + 1;
-        samplesTaken = samplesTaken + 1;
       }
-
-    // Sleep
-    } else {
-      delay(10);
-      digitalWrite(8, LOW); // Turns off the green LED light to conserve battery
-      Serial.println("I am sleeping");
-      digitalWrite(13, HIGH);
-      delay(sleepDuration);
-      digitalWrite(13, LOW);
-      samplesTaken = 1;
+      
+      // Flush data to SD card after writing all buffered data
+      outputFile.flush();
+      Serial.print("Wrote ");
+      Serial.print(writeCount);
+      Serial.println(" data points to SD card");
     }
 
   // Not yet time to begin sampling
@@ -288,8 +313,33 @@ void loop() {
 }
 
 // ===========================
-// TRIGGER SAMPLING
+// TRIGGER SAMPLING - TIMER INTERRUPT HANDLER
 // ===========================
 void triggerSampling() {
-  logReady = true;
+  // Only collect data if it's time to begin sampling
+  if (!DELAY_START || ((currYear >= startYear) && (currMonth >= startMonth) && (currDay >= startDay) && 
+     (currHour >= startHour) && (currMin >= startMinute))) {
+    
+    // Get current time
+    DateTime now = rtc.now();
+    
+    // Read sensor data
+    float temp2, pres;
+    #if USE_NEW_SENSOR
+      newSensor.read();
+      temp2 = newSensor.temperature();
+      pres = newSensor.pressure();
+    #else
+      temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
+      pres = oldSensor.getPressure(ADC_4096);
+    #endif
+    
+    // Read battery voltage
+    int sensorValue = analogRead(batteryPin);
+    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
+    float actualBatteryVoltage = batteryVoltage * 2; // Adjust multiplier based on your divider
+    
+    // Add data to circular buffer
+    addToBuffer(now, pres, temp2, actualBatteryVoltage);
+  }
 }
