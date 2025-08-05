@@ -89,10 +89,191 @@ volatile int bufferTail = 0; // Points to next read position
 volatile int bufferCount = 0; // Number of items in buffer
 volatile bool bufferOverflow = false; // Flag to indicate buffer overflow
 
-int waitingBlinks = 1; // Used to count LED blinks while the device is waiting to start sampling
 int currYear,currMonth,currDay,currHour,currMin,currSec; // Variables for different time elements
 
-char fileName[15]; // Creates a char array of size 15 for an easily modifiable file name
+char fileName[18]; // Creates a char array of size 18 for file name
+
+// ===========================
+// SETUP - SENSOR, TIMESTAMP, SD CARD
+// ===========================
+void setup() {
+  pinMode(13, OUTPUT); // Activates the red LED on pin 13
+  Serial.begin(9600);
+  Wire.begin();
+  rtc.begin();
+  rtc.writeSqwPinMode(DS3231_OFF);
+  rtc.setAlarm1(rtc.now(), DS3231_A1_PerSecond); // DateTime object shouldn't matter since we're setting the alarm to trigger every second
+
+  #if USE_NEW_SENSOR
+    newSensor.init();
+    newSensor.setModel(MS5837::MS5837_02BA);
+    newSensor.setFluidDensity(997);
+  #else
+    oldSensor.reset();
+    oldSensor.begin();
+  #endif
+
+  Serial.print("Initializing SD card...");
+
+  DateTime now = rtc.now();
+  currYear = now.year(); currMonth = now.month(); currDay = now.day();
+  currHour = now.hour(); currMin = now.minute(); currSec = now.second();
+  
+  if (!SD.begin(cardSelect)) { // If SD card is not present
+    Serial.println("Card Failed or Not Present");
+    error(1);
+    return;
+  }
+  
+  // Initialize circular buffer
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    dataBuffer[i].valid = false;
+  }
+  
+  float sampleTime = (1/sampleFreq)*1000000; // Convert sampling frequency to microseconds
+  Timer1.initialize(sampleTime);
+  Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
+
+  Serial.println("Card Initialized.");
+  makeFileName(fileName);
+
+  SdFile::dateTimeCallback(setTimeStamp); // Timestamps the .csv file (inserts as metadata)
+  outputFile = SD.open(fileName, FILE_WRITE); // Opens .csv file
+
+  if (outputFile) {
+    outputFile.print("Timestamp,\"Pressure [mbar]\",\"Temp [deg C]\",\"Battery [VDC]\"");
+    outputFile.println();
+  } else {
+    Serial.println("error opening datalog-case1");
+    error(5);
+  }
+  Serial.println("READY!");
+}
+
+// ===========================
+// DATA COLLECTION LOOP
+// ===========================
+void loop() {
+  // Time to begin? (User-defined parameters or rapid start)
+  if (!DELAY_START || ((currYear >= startYear) && (currMonth >= startMonth) && (currDay >= startDay) && 
+     (currHour >= startHour) && (currMin >= startMinute))) {
+
+    // Check for buffer overflow warning
+    if (bufferOverflow) {
+      Serial.println("WARNING: Buffer overflow detected - some data may have been lost!");
+      bufferOverflow = false;
+    }
+
+    // Only write to SD card if buffer has at least 12 data points
+    if (bufferCount > 11) {
+      
+      // Process data from circular buffer until empty
+      DataPoint data;
+      int writeCount = 0;
+      while (readFromBuffer(&data)) {
+        // Write data to SD card
+        outputFile.print(data.now.year());
+        outputFile.print('/');
+        outputFile.print(data.now.month());
+        outputFile.print('/');
+        outputFile.print(data.now.day());
+        outputFile.print(" ");
+        outputFile.print(data.now.hour());
+        outputFile.print(':');
+        outputFile.print(data.now.minute());
+        outputFile.print(':');
+        outputFile.print(data.now.second());
+        outputFile.print(",");
+        outputFile.print(data.pressure);
+        outputFile.print(",");
+        outputFile.print(data.temperature);
+        outputFile.print(",");
+        outputFile.print(data.batteryVoltage);
+        outputFile.println();
+        
+        writeCount++;
+        Serial.println("I am logging");
+      }
+      
+      // Flush data to SD card after writing all buffered data
+      outputFile.flush();
+      Serial.print("Wrote ");
+      Serial.print(writeCount);
+      Serial.println(" data points to SD card");
+    }
+
+  // Not yet time to begin sampling
+  } else {
+    DateTime now = rtc.now();
+    currYear = now.year(); currMonth = now.month(); currDay = now.day();
+    currHour = now.hour(); currMin = now.minute(); currSec = now.second();
+
+  delay(500);
+  }
+}
+
+// ===========================
+// TRIGGER SAMPLING - TIMER INTERRUPT HANDLER
+// ===========================
+void triggerSampling() {
+  // Only collect data if it's time to begin sampling
+  if (!DELAY_START || ((currYear >= startYear) && (currMonth >= startMonth) && (currDay >= startDay) && 
+     (currHour >= startHour) && (currMin >= startMinute))) {
+    
+    // Get current time
+    DateTime now = rtc.now();
+    
+    // Read sensor data
+    float temp2, pres;
+    #if USE_NEW_SENSOR
+      newSensor.read();
+      temp2 = newSensor.temperature();
+      pres = newSensor.pressure();
+    #else
+      temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
+      pres = oldSensor.getPressure(ADC_4096);
+    #endif
+    
+    // Read battery voltage
+    int sensorValue = analogRead(batteryPin);
+    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
+    float actualBatteryVoltage = batteryVoltage * 2; // Adjust multiplier based on your divider
+    
+    // Add data to circular buffer
+    addToBuffer(now, pres, temp2, actualBatteryVoltage);
+  }
+
+  void makeFileName(char charArray[]) {
+    // Create a date tag
+    charArray[0] = '0' + currYear / 1000;
+    charArray[1] = '0' + (currYear % 1000) / 100;
+    charArray[2] = '0' + (currYear % 100) / 10;
+    charArray[3] = '0' + currYear % 10;
+    charArray[4] = '-';
+    charArray[5] = '0' + currMonth / 10;
+    charArray[6] = '0' + currMonth % 10;
+    charArray[7] = '-';
+    charArray[8] = '0' + currDay / 10;
+    charArray[9] = '0' + currDay % 10;
+    charArray[10] = '0';
+    charArray[11] = '0';
+    charArray[12] = '0';
+    charArray[13] = '.';
+    charArray[14] = 'c';
+    charArray[15] = 's';
+    charArray[16] = 'v';
+    charArray[17] = '\0';
+
+  // Find the next available file index, then write the new name once
+  for (uint8_t fileIndex = 0; fileIndex < 100; fileIndex++) {
+    charArray[10] = '0' + fileIndex / 100;
+    charArray[11] = '0' + (fileIndex % 100) / 10;
+    charArray[12] = '0' + fileIndex % 10;
+    if (! SD.exists(charArray)) {
+      break;
+    }
+  }
+}
 
 // ===========================
 // SETTING FILE DATE AND TIME
@@ -154,192 +335,17 @@ bool readFromBuffer(DataPoint* data) {
     return false; // Buffer is empty
   }
   
-  // Copy data from buffer - handle volatile DateTime properly
+  // Copy data from buffer
   data->now = DateTime(dataBuffer[bufferTail].now.unixtime());
   data->pressure = dataBuffer[bufferTail].pressure;
   data->temperature = dataBuffer[bufferTail].temperature;
   data->batteryVoltage = dataBuffer[bufferTail].batteryVoltage;
   data->valid = dataBuffer[bufferTail].valid;
   
-  // Mark as invalid and move tail forward
+  // Mark as invalid and move tail
   dataBuffer[bufferTail].valid = false;
   bufferTail = (bufferTail + 1) % BUFFER_SIZE;
   bufferCount--;
   
   return true;
-}
-
-// ===========================
-// SETUP - SENSOR, TIMESTAMP, SD CARD
-// ===========================
-void setup() {
-  pinMode(13, OUTPUT); // Activates the red LED on pin 13
-  pinMode(8, OUTPUT); // Activates the green LED on pin 8
-  Serial.begin(9600);
-  Serial.println("Starting!");
-  Wire.begin();
-  rtc.begin();
-
-  #if USE_NEW_SENSOR
-    newSensor.init();
-    newSensor.setModel(MS5837::MS5837_02BA);
-    newSensor.setFluidDensity(997);
-  #else
-    oldSensor.reset();
-    oldSensor.begin();
-  #endif
-
-  Serial.print("Initializing SD card...");
-
-  #if DELAY_START
-    DateTime now = rtc.now();
-    currYear = now.year(); currMonth = now.month(); currDay = now.day();
-    currHour = now.hour(); currMin = now.minute(); currSec = now.second();
-  #endif
-  
-  if (!SD.begin(cardSelect)) { // If SD card is not present
-    Serial.println("Card Failed or Not Present");
-    error(1);
-    return;
-  }
-  
-  // Initialize circular buffer
-  for (int i = 0; i < BUFFER_SIZE; i++) {
-    dataBuffer[i].valid = false;
-  }
-  
-  float sampleTime = (1/sampleFreq)*1000000; // Convert sampling frequency to microseconds
-  Timer1.initialize(sampleTime);
-  Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
-
-  Serial.println("Card Initialized.");
-  strcpy(fileName, "LOG00.CSV"); // Fills the character array with LOG00.CSV to name the file
-
-  // Create a new .csv file everytime the SD card is pulled out of card holder
-  for (uint8_t fileIndex = 0; fileIndex < 100; fileIndex++) {
-    fileName[3] = '0' + fileIndex / 10; // Increments the 10s digit by 1 every 10 new files
-    fileName[4] = '0' + fileIndex % 10; // Increments the 1s digit by 1 every 1 new file
-    if (! SD.exists(fileName)) {
-      break;
-    }
-  }
-
-  SdFile::dateTimeCallback(setTimeStamp); // Timestamps the .csv file (inserts as metadata)
-  outputFile = SD.open(fileName, FILE_WRITE); // Opens .csv file
-
-  if (outputFile) {
-    outputFile.print("Timestamp,\"Pressure [mbar]\",\"Temp [deg C]\",\"Battery [VDC]\"");
-    outputFile.println();
-    Serial.println("Header logged");
-  } else {
-    Serial.println("error opening datalog-case1");
-    error(5);
-  }
-
-  Serial.println("READY!");
-  delay(500);
-  Serial.println("Datalogging!");
-}
-
-// ===========================
-// DATA COLLECTION LOOP
-// ===========================
-void loop() {
-  // Time to begin? (User-defined parameters or rapid start)
-  if (!DELAY_START || ((currYear >= startYear) && (currMonth >= startMonth) && (currDay >= startDay) && 
-     (currHour >= startHour) && (currMin >= startMinute))) {
-
-    // Check for buffer overflow warning
-    if (bufferOverflow) {
-      Serial.println("WARNING: Buffer overflow detected - some data may have been lost!");
-      bufferOverflow = false;
-    }
-
-    // Only write to SD card if buffer has at least 12 data points
-    if (bufferCount >= 12) {
-      Serial.println("Buffer threshold reached - starting SD write...");
-      
-      // Process data from circular buffer until empty
-      DataPoint data;
-      int writeCount = 0;
-      while (readFromBuffer(&data)) {
-        // Write data to SD card
-        outputFile.print(data.now.year());
-        outputFile.print('/');
-        outputFile.print(data.now.month());
-        outputFile.print('/');
-        outputFile.print(data.now.day());
-        outputFile.print(" ");
-        outputFile.print(data.now.hour());
-        outputFile.print(':');
-        outputFile.print(data.now.minute());
-        outputFile.print(':');
-        outputFile.print(data.now.second());
-        outputFile.print(",");
-        outputFile.print(data.pressure);
-        outputFile.print(",");
-        outputFile.print(data.temperature);
-        outputFile.print(",");
-        outputFile.print(data.batteryVoltage);
-        outputFile.println();
-        
-        writeCount++;
-        Serial.println("I am logging");
-      }
-      
-      // Flush data to SD card after writing all buffered data
-      outputFile.flush();
-      Serial.print("Wrote ");
-      Serial.print(writeCount);
-      Serial.println(" data points to SD card");
-    }
-
-  // Not yet time to begin sampling
-  } else {
-    DateTime now = rtc.now();
-    currYear = now.year(); currMonth = now.month(); currDay = now.day();
-    currHour = now.hour(); currMin = now.minute(); currSec = now.second();
-
-    // Blink green LED while waiting for sampling start
-    waitingBlinks = waitingBlinks + 1;
-    if (waitingBlinks <= 20) { // Lasts approximately 20s (since delay(500) is ~1s)
-      digitalWrite(13, HIGH);
-      Serial.println("I am waiting"); 
-      delay(500);
-      digitalWrite(13, LOW);
-    }
-  delay(500);
-  }
-}
-
-// ===========================
-// TRIGGER SAMPLING - TIMER INTERRUPT HANDLER
-// ===========================
-void triggerSampling() {
-  // Only collect data if it's time to begin sampling
-  if (!DELAY_START || ((currYear >= startYear) && (currMonth >= startMonth) && (currDay >= startDay) && 
-     (currHour >= startHour) && (currMin >= startMinute))) {
-    
-    // Get current time
-    DateTime now = rtc.now();
-    
-    // Read sensor data
-    float temp2, pres;
-    #if USE_NEW_SENSOR
-      newSensor.read();
-      temp2 = newSensor.temperature();
-      pres = newSensor.pressure();
-    #else
-      temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
-      pres = oldSensor.getPressure(ADC_4096);
-    #endif
-    
-    // Read battery voltage
-    int sensorValue = analogRead(batteryPin);
-    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
-    float actualBatteryVoltage = batteryVoltage * 2; // Adjust multiplier based on your divider
-    
-    // Add data to circular buffer
-    addToBuffer(now, pres, temp2, actualBatteryVoltage);
-  }
 }
