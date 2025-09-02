@@ -40,36 +40,28 @@ const float sampleFreq = 1; // Sampling frequency in Hz
 // LIBRARIES
 // ===========================
 #include <Arduino_FreeRTOS.h>
-#include 
+#include "FreeRTOSConfig.h"
+#include <queue.h>
+#include <semphr.h>
 
 #include <Wire.h> // Arduino library
 #include <SPI.h> // Arduino library
 #include <SD.h> // Arduino library
 #include <EEPROM.h> // Arduino library (?)
 
-#if USE_NEW_SENSOR
-  #include "MS5837.h"
-#else
-  #include "SparkFun_MS5803_I2C.h"
-#endif
-
 // A note on using the SparkFun library:
 // A very minor change to the SparkFun library is needed for this code to work. The sensorWait function in SparkFun_MS5803_I2C.h must be declared as virtual.
 // This change is used to override sensorWait for better power management.
 
-#include "RTClib.h"
-#include "TimerOne.h"
-#include "LowPower.h"
+#if USE_NEW_SENSOR
+  #include <MS5837.h>
+#else
+  #include <SparkFun_MS5803_I2C.h>
+#endif
 
-// Create custom MS5803 class to override sensorWait function for better power management
-// class CustomMS5803 : public MS5803 {
-//   public:
-//     void sensorWait(uint8_t time) {
-//       // sensorWait in SparkFun library is 1-10ms; the minimum sleep time is 16ms; THEORETICALLY, TWI activity should wake the MCU early
-//       // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling), and TWI (used to communicate with pressure sensor)
-//       LowPower.idle(SLEEP_15MS, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
-//     }
-// };
+#include <RTClib.h>
+#include <TimerOne.h>
+// #include <LowPower.h>
 
 // ===========================
 // MAGIC NUMBER DEFINITIONS
@@ -93,8 +85,8 @@ const float sampleFreq = 1; // Sampling frequency in Hz
 #define BATTERY_VOLTAGE_MULTIPLIER 2
 
 // Buffer and data definitions
-#define BUFFER_SIZE 4              // The ATMega 32u4 only has 2560 bytes of SRAM...set buffer size accordingly
-#define BUFFER_WRITE_COUNT 2       // Number of data points that must be present before write occurs; shooting for 512 bytes per write for most efficiency
+#define QUEUE_SIZE 10              
+#define QUEUE_WRITE_COUNT 2       
 #define FILENAME_LENGTH 13
 #define MICROSECONDS_PER_SECOND 1000000
 #define FRESHWATER_DENSITY 997
@@ -106,13 +98,21 @@ const float sampleFreq = 1; // Sampling frequency in Hz
 
 #define SERIAL_NUMBER_ADDRESS 0
 
+// FreeRTOS task priorities
+#define SENSOR_TASK_PRIORITY 2
+#define SD_WRITE_TASK_PRIORITY 1
+
+// FreeRTOS task stack sizes
+#define SENSOR_TASK_STACK_SIZE 256
+#define SD_WRITE_TASK_STACK_SIZE 256
+
 // ===========================
 // MACRO SUBSTITUTION
 // ===========================
-#define cardSelect SD_CARD_SELECT_PIN // Chip select pin for SD card // DO NOT MODIFY
+#define cardSelect SD_CARD_SELECT_PIN // DO NOT MODIFY
 
 // ===========================
-// DATA STRUCTURE FOR CIRCULAR BUFFER
+// DATA STRUCTURE FOR FREERTOS QUEUE
 // ===========================
 struct DataPoint {
   int millisec;
@@ -120,8 +120,17 @@ struct DataPoint {
   float temperature;
   float batteryVoltage;
   DateTime now;
-  bool valid; // Flag to indicate if this data point is valid
+  bool valid;
 };
+
+// ===========================
+// FREERTOS HANDLES AND GLOBAL VARIABLES
+// ===========================
+QueueHandle_t dataQueue;
+
+// Task handles
+TaskHandle_t sensorTaskHandle = NULL;
+TaskHandle_t sdWriteTaskHandle = NULL;
 
 // ===========================
 // INITIALIZING GLOBAL VARIABLES
@@ -140,15 +149,9 @@ const int maxADCValue = MAX_ADC_VALUE; // The max ADC value for a 10-bit ADC (0-
 
 const float referenceVoltage = REFERENCE_VOLTAGE; // Reference voltage for the ADC (3.3V or 5V depending on your setup)
 
-// Circular buffer variables
-volatile DataPoint dataBuffer[BUFFER_SIZE];
-volatile int bufferHead = 0; // Points to next write position
-volatile int bufferTail = 0; // Points to next read position
-volatile int bufferCount = 0; // Number of items in buffer
-volatile bool bufferOverflow = false; // Flag to indicate buffer overflow
-
 // Sampling flag for ISR to main loop communication
 volatile bool samplingFlag = false;
+volatile bool millisResetFlag = false;
 
 int millisecAtInterrupt = 0; // Number of milliseconds at last 1 Hz interrupt from RTC
 
@@ -157,17 +160,71 @@ float sampleTime = (1/sampleFreq)*MICROSECONDS_PER_SECOND; // Convert sampling f
 extern int __heap_start, *__brkval;
 
 // ===========================
-// SETUP - SENSOR, TIMESTAMP, SD CARD
+// FREERTOS TASK FUNCTIONS
+// ===========================
+// High priority task for reading sensor values
+void sensorTask(void *pvParameters) {
+  (void) pvParameters;
+  
+  for (;;) {
+    // Wait for sampling flag from interrupt
+    if (samplingFlag) {
+      performSensorReading();
+      samplingFlag = false;
+    }
+    
+    // Handle millisecond reset flag
+    if (millisResetFlag) {
+      millisecAtInterrupt = millis();
+      millisResetFlag = false;
+    }
+    
+    // Yield to other tasks
+    taskYIELD();
+  }
+}
+
+// Low priority task for writing to SD card
+void sdWriteTask(void *pvParameters) {
+  (void) pvParameters;
+  
+  for (;;) {
+    // Check if queue has enough data points to write
+    if (uxQueueMessagesWaiting(dataQueue) >= QUEUE_WRITE_COUNT) {
+      
+      // Process data from queue
+      DataPoint data;
+      int writeCount = 0;
+      
+      while (xQueueReceive(dataQueue, &data, 0) == pdTRUE && writeCount < QUEUE_WRITE_COUNT) {
+        if (data.valid) {
+          writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, data.batteryVoltage);
+          writeCount++;
+        }
+      }
+      
+      // Flush data to SD card after writing all queued data
+      if (writeCount > 0) {
+        outputFile.flush();
+      }
+    }
+    
+    // Sleep for a short time to allow other tasks to run
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
+// ===========================
+// SETUP - SENSOR, TIMESTAMP, SD CARD, FREERTOS
 // ===========================
 void setup() {
   pinMode(LED_PIN, OUTPUT); // Activates the red LED on pin 13
   pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
-  Serial.begin(SERIAL_BAUD_RATE);
+  // Serial.begin(SERIAL_BAUD_RATE);
   while (!Serial); // Wait for serial connection to be established
   Wire.begin();
   
   if (!rtc.begin()) {
-    Serial.println(F("RTC Failed to initialize"));
     error(2);
     return;
   }
@@ -176,7 +233,6 @@ void setup() {
 
   #if USE_NEW_SENSOR
     if (!newSensor.init()) {
-      Serial.println("New pressure sensor failed to initialize");
       error(3);
       return;
     }
@@ -186,30 +242,19 @@ void setup() {
     oldSensor.reset();
     oldSensor.begin();
   #endif
-
-    Serial.print(F("Initializing SD card..."));
   
   if (!SD.begin(cardSelect)) { // If SD card is not present
-    Serial.println(F("Card Failed or Not Present"));
     error(ERROR_SD_CARD_FAILED);
     return;
   }
   
-  // Initialize circular buffer
-  for (int i = 0; i < BUFFER_SIZE; i++) {
-    dataBuffer[i].valid = false;
-  }
-
-  Serial.println(F("Card Initialized."));
   char fileName[FILENAME_LENGTH];
   makeFileName(fileName);
-  Serial.println(freeMemory());
   
   SdFile::dateTimeCallback(setTimeStamp); // Timestamps the .csv file (inserts as metadata)
   outputFile = SD.open(fileName, FILE_WRITE); // Opens .csv file
 
   if (outputFile) {
-    Serial.println(F("File opened"));
     char serialNumber[16];
     EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
     outputFile.print(F("W.G. Num: "));
@@ -217,130 +262,66 @@ void setup() {
     outputFile.print(',');
     outputFile.print(F("Timestamp,\"Pressure [mbar]\",\"Temp [deg C]\",\"Battery [VDC]\""));
     outputFile.println();
-    Serial.println(F("About to write"));
     outputFile.flush();
-    Serial.println(F("File written"));
   } else {
-    Serial.println(F("error opening datalog-case1"));
     error(ERROR_FILE_OPEN_FAILED);
   }
-  Serial.println(F("READY!"));
+
+  // Create FreeRTOS queue for data points
+  dataQueue = xQueueCreate(QUEUE_SIZE, sizeof(DataPoint));
+  if (dataQueue == NULL) {
+    error(4);
+    return;
+  }
+
+  // Create sensor reading task (high priority)
+  if (xTaskCreate(sensorTask, "SensorTask", SENSOR_TASK_STACK_SIZE, NULL, SENSOR_TASK_PRIORITY, &sensorTaskHandle) != pdPASS) {
+    error(5);
+    return;
+  }
+  
+  // Create SD writing task (low priority)
+  if (xTaskCreate(sdWriteTask, "SDWriteTask", SD_WRITE_TASK_STACK_SIZE, NULL, SD_WRITE_TASK_PRIORITY, &sdWriteTaskHandle) != pdPASS) {
+    error(6);
+    return;
+  }
 
   // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors included in the 32u4 are too weak 
   // for square wave output but should work for interrupts.
 
   Timer1.initialize(sampleTime);
   Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
-  Serial.println(F("Interrupt attached 2"));
-  Serial.println(freeMemory());
-  // attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING); // Interrupt on pin 1 (INT1) for timer reset / rtc alarm // THIS IS CAUSING PROBLEMS
 
   #if DELAY_START
     enterRTCDeepSleep();  
   #else
-    Serial.println(F("Setting alarm 1"));
     // DateTime now = rtc.now(); // Set alarm 1 to continue until now + 5 years (i.e. until battery dies)
     // rtc.setAlarm1(DateTime(now.year() + 5, now.month(), now.day(), now.hour(), now.minute(), now.second()), DS3231_A1_PerSecond); // DateTime object shouldn't matter since we're setting the alarm to trigger every second
-    Serial.println(F("Alarm 1 set"));
   #endif
+  
+  // Start FreeRTOS scheduler
+  vTaskStartScheduler();
+  
+  // Should never reach here
+  error(7);
 }
 
 // ===========================
-// DATA COLLECTION LOOP
+// MAIN LOOP (should never be reached with FreeRTOS)
 // ===========================
 void loop() {
-    // Check for sampling flag from ISR
-    if (samplingFlag) {
-        Serial.println(F("Flag detected, starting sampling..."));
-        performSensorReading();
-        samplingFlag = false;
-        Serial.println(F("Flag cleared"));
-    }
-    
-    // Check for buffer overflow warning
-    if (bufferOverflow) {
-      Serial.println(F("WARNING: Buffer overflow detected!"));
-      // TODO: Add some sort of flag to file to indicate that an error occurred
-      bufferOverflow = false;
-    }
-
-    // Only write to SD card if buffer has at least 12 data points
-    if (bufferCount > BUFFER_WRITE_COUNT - 1) {
-      
-      // Process data from circular buffer until empty
-      DataPoint data;
-      int writeCount = 0;
-      while (readFromBuffer(&data) && writeCount < BUFFER_WRITE_COUNT) {
-        writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, data.batteryVoltage);
-        writeCount++;
-      }
-      
-      // Flush data to SD card after writing all buffered data
-      outputFile.flush();
-      Serial.print(F("Wrote "));
-      Serial.print(writeCount);
-      Serial.println(F(" data points to SD card"));
-    }
-    // Finished writing to SD card, sleep until next sampling time, then check buffer again
-    setForeverIdleSleep();
+  // This should never be reached as FreeRTOS scheduler takes over
+  error(8);
 }
 
 // ===========================
 // TRIGGER SAMPLING - TIMER INTERRUPT HANDLER
 // ===========================
-// OLD VERSION - COMMENTED OUT TO TEST ISR vs main loop functionality
-/*
-void triggerSampling(bool writeNow) {
-    DateTime now = rtc.now();
-    
-    float temp2, pres;
-    #if USE_NEW_SENSOR
-      newSensor.read();
-      temp2 = newSensor.temperature();
-      pres = newSensor.pressure();
-    #else
-      temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
-      pres = oldSensor.getPressure(ADC_4096);
-    #endif
-    
-    int sensorValue = analogRead(batteryPin);
-    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
-    float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER; // Adjust multiplier based on your divider
-    int millisec = millis() - millisecAtInterrupt;
-
-    addToBuffer(now, pres, temp2, actualBatteryVoltage, millisec);
-}
-*/
-
-// NEW VERSION - Simple ISR that just sets a flag
+// ISR that sets a flag for sensor reading
 void triggerSampling() {
     samplingFlag = true;
     // Debug: blink LED to show ISR is firing
     digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-}
-
-// NEW FUNCTION - Actual sensor reading moved to main loop
-void performSensorReading() {
-    Serial.println(F("Sampling sensors..."));
-    DateTime now = rtc.now();
-    
-    float temp2, pres;
-    #if USE_NEW_SENSOR
-      newSensor.read();
-      temp2 = newSensor.temperature();
-      pres = newSensor.pressure();
-    #else
-      temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
-      pres = oldSensor.getPressure(ADC_4096);
-    #endif
-    
-    int sensorValue = analogRead(batteryPin);
-    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
-    float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER; // Adjust multiplier based on your divider
-    int millisec = millis() - millisecAtInterrupt;
-
-    addToBuffer(now, pres, temp2, actualBatteryVoltage, millisec);
-    Serial.println(F("Sampling complete"));
 }
 
 // ===========================
@@ -350,8 +331,43 @@ void performSensorReading() {
 void resetTimerInterrupt() {
   Timer1.initialize(sampleTime);
   Timer1.attachInterrupt(triggerSampling);
-  millisecAtInterrupt = millis();
+  millisResetFlag = true;
 }
+
+// ===========================
+// SENSOR READING FUNCTION
+// ===========================
+void performSensorReading() {
+    DateTime now = rtc.now();
+    
+    float temp2, pres;
+    #if USE_NEW_SENSOR
+      newSensor.read();
+      temp2 = newSensor.temperature();
+      pres = newSensor.pressure();
+    #else
+      temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
+      pres = oldSensor.getPressure(ADC_4096);
+    #endif
+    
+    int sensorValue = analogRead(batteryPin);
+    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
+    float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER; // Adjust multiplier based on your divider
+    int millisec = millis() - millisecAtInterrupt;
+
+    // Create data point and add to queue
+    DataPoint dataPoint;
+    dataPoint.now = now;
+    dataPoint.millisec = millisec;
+    dataPoint.pressure = pres;
+    dataPoint.temperature = temp2;
+    dataPoint.batteryVoltage = actualBatteryVoltage;
+    dataPoint.valid = true;
+    
+    // Add to queue (non-blocking)
+    if (xQueueSend(dataQueue, &dataPoint, 0) != pdTRUE) {
+    }
+  }
 
 void makeFileName(char* fileName) {
   // Format: MM-DD-00.csv (e.g., 04-23-01.csv)
@@ -379,9 +395,6 @@ void makeFileName(char* fileName) {
     fileName[6] = '0' + (fileIndex / 10);
     fileName[7] = '0' + (fileIndex % 10);
   }
-  
-  Serial.print(F("File name: "));
-  Serial.println(fileName);
 }
 
 // ===========================
@@ -413,53 +426,6 @@ void error (uint8_t errno) {
   }
 }
 
-// ===========================
-// CIRCULAR BUFFER FUNCTIONS
-// ===========================
-// Add data point to circular buffer (called from interrupt)
-void addToBuffer(DateTime now, int millisec, float pressure, float temperature, float batteryVoltage) {
-  // Check if buffer is full
-  if (bufferCount >= BUFFER_SIZE) {
-    bufferOverflow = true;
-    // Move tail forward to make room (overwrite oldest data)
-    bufferTail = (bufferTail + 1) % BUFFER_SIZE;
-  } else {
-    bufferCount++;
-  }
-  
-  // Add new data point
-  dataBuffer[bufferHead].now = now;
-  dataBuffer[bufferHead].millisec = millisec;
-  dataBuffer[bufferHead].pressure = pressure;
-  dataBuffer[bufferHead].temperature = temperature;
-  dataBuffer[bufferHead].batteryVoltage = batteryVoltage;
-  dataBuffer[bufferHead].valid = true;
-  
-  // Move head to next position
-  bufferHead = (bufferHead + 1) % BUFFER_SIZE;
-}
-
-// Read data point from circular buffer (called from main loop)
-bool readFromBuffer(DataPoint* data) {
-  if (bufferCount == 0) {
-    return false; // Buffer is empty
-  }
-  
-  // Copy data from buffer
-  data->now = DateTime(dataBuffer[bufferTail].now.unixtime());
-  data->pressure = dataBuffer[bufferTail].pressure;
-  data->temperature = dataBuffer[bufferTail].temperature;
-  data->batteryVoltage = dataBuffer[bufferTail].batteryVoltage;
-  data->valid = dataBuffer[bufferTail].valid;
-  
-  // Mark as invalid and move tail
-  dataBuffer[bufferTail].valid = false;
-  bufferTail = (bufferTail + 1) % BUFFER_SIZE;
-  bufferCount--;
-  
-  return true;
-}
-
 void writeToOutputFile(DateTime now, int millisec,float pressure, float temperature, float batteryVoltage) {
   // Write data to SD card
   outputFile.print(now.year());
@@ -487,16 +453,14 @@ void writeToOutputFile(DateTime now, int millisec,float pressure, float temperat
 
 void enterRTCDeepSleep() {
   // Set RTC alarm to correct date
-  Serial.println(F("Entering RTC deep sleep"));
   DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
   rtc.setAlarm1(startDateTime, DS3231_A1_Date); // Alarm 1 triggers at the start time
   rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every hour, taking a sample to track when/if battery dies
   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
-  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  // LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
 }
 
 void deepSleepInterrupt() {
-  Serial.println(F("Deep sleep interrupt"));
   DateTime now = rtc.now();
   performSensorReading(); // Call sensor reading directly since we're not in main loop
   // Use now to set alarm 2 to trigger an hour from now
@@ -510,10 +474,5 @@ void deepSleepInterrupt() {
 
 // Idle sleep should be used whenever millisecond tracking is needed or timer 1 is used for sampling
 void setForeverIdleSleep() {
-  LowPower.idle(SLEEP_FOREVER, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
-}
-
-int freeMemory() {
-  int v;
-  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+  // LowPower.idle(SLEEP_FOREVER, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
 }
