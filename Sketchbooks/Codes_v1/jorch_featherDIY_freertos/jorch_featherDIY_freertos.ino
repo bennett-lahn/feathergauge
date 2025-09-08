@@ -16,22 +16,22 @@
 // USER INPUTS:
 // Please set the below variables to reflect your sampling preferences.
 // ===========================
-const float sampleFreq = 1; // Sampling frequency in Hz
+#define SAMPLE_FREQ 1.0 // Sampling frequency in Hz
 
 // Edit for DELAY start ONLY
 #if DELAY_START // Preferred date
-  const int startYear = 2025; // Year to start sampling
-  const int startMonth = 4; // Month to start sampling
-  const int startDay = 23; // Day to start sampling
-  const int startHour = 11; // Hour to start sampling (24-hr format)
+  const uint16_t startYear = 2025; // Year to start sampling
+  const uint16_t startMonth = 4; // Month to start sampling
+  const uint16_t startDay = 23; // Day to start sampling
+  const uint16_t startHour = 11; // Hour to start sampling (24-hr format)
   const int startMinute = 33; // Minute to start sampling
 
 #else // Early dummy date to satisfy later conditional check
-  const int startYear = 2000; // DO NOT MODIFY
-  const int startMonth = 1; // DO NOT MODIFY
-  const int startDay = 1; // DO NOT MODIFY
-  const int startHour = 12; // DO NOT MODIFY
-  const int startMinute = 0; // DO NOT MODIFY
+  const uint16_t startYear = 2000; // DO NOT MODIFY
+  const uint16_t startMonth = 1; // DO NOT MODIFY
+  const uint16_t startDay = 1; // DO NOT MODIFY
+  const uint16_t startHour = 12; // DO NOT MODIFY
+  const uint16_t startMinute = 0; // DO NOT MODIFY
 #endif
 
 // =========================== USER: DO NOT EDIT BELOW THIS LINE ===========================
@@ -103,8 +103,8 @@ const float sampleFreq = 1; // Sampling frequency in Hz
 #define SD_WRITE_TASK_PRIORITY 1
 
 // FreeRTOS task stack sizes
-#define SENSOR_TASK_STACK_SIZE 256
-#define SD_WRITE_TASK_STACK_SIZE 256
+#define SENSOR_TASK_STACK_SIZE 150
+#define SD_WRITE_TASK_STACK_SIZE 150
 
 // ===========================
 // MACRO SUBSTITUTION
@@ -144,20 +144,13 @@ TaskHandle_t sdWriteTaskHandle = NULL;
 RTC_DS3231 rtc;
 File outputFile; // Used to open, write to, and close files on the SD card
 
-const int batteryPin = BATTERY_VOLTAGE_PIN; // Pin where the battery voltage is read; replace with the correct analog pin as needed
-const int maxADCValue = MAX_ADC_VALUE; // The max ADC value for a 10-bit ADC (0-1023)
-
-const float referenceVoltage = REFERENCE_VOLTAGE; // Reference voltage for the ADC (3.3V or 5V depending on your setup)
-
 // Sampling flag for ISR to main loop communication
 volatile bool samplingFlag = false;
 volatile bool millisResetFlag = false;
 
 int millisecAtInterrupt = 0; // Number of milliseconds at last 1 Hz interrupt from RTC
 
-float sampleTime = (1/sampleFreq)*MICROSECONDS_PER_SECOND; // Convert sampling frequency to microseconds
-
-extern int __heap_start, *__brkval;
+float sampleTime = (1.0/SAMPLE_FREQ)*MICROSECONDS_PER_SECOND; // Convert sampling frequency to microseconds
 
 // ===========================
 // FREERTOS TASK FUNCTIONS
@@ -165,6 +158,7 @@ extern int __heap_start, *__brkval;
 // High priority task for reading sensor values
 void sensorTask(void *pvParameters) {
   (void) pvParameters;
+  // Serial.println(F("Sensor task start"));
   
   for (;;) {
     // Wait for sampling flag from interrupt
@@ -187,6 +181,7 @@ void sensorTask(void *pvParameters) {
 // Low priority task for writing to SD card
 void sdWriteTask(void *pvParameters) {
   (void) pvParameters;
+  // Serial.println(F("SD task start"));
   
   for (;;) {
     // Check if queue has enough data points to write
@@ -194,7 +189,7 @@ void sdWriteTask(void *pvParameters) {
       
       // Process data from queue
       DataPoint data;
-      int writeCount = 0;
+      uint8_t writeCount = 0;
       
       while (xQueueReceive(dataQueue, &data, 0) == pdTRUE && writeCount < QUEUE_WRITE_COUNT) {
         if (data.valid) {
@@ -206,6 +201,7 @@ void sdWriteTask(void *pvParameters) {
       // Flush data to SD card after writing all queued data
       if (writeCount > 0) {
         outputFile.flush();
+        // Serial.println(F("Data written"));
       }
     }
     
@@ -219,42 +215,50 @@ void sdWriteTask(void *pvParameters) {
 // ===========================
 void setup() {
   pinMode(LED_PIN, OUTPUT); // Activates the red LED on pin 13
-  pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
+  // pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
   // Serial.begin(SERIAL_BAUD_RATE);
-  while (!Serial); // Wait for serial connection to be established
+  // Serial.println(F("Init start"));
   Wire.begin();
   
   if (!rtc.begin()) {
-    error(2);
+    // Serial.println(F("RTC fail"));
+    // error(2);
     return;
   }
+  // Serial.println(F("RTC OK"));
   
   rtc.writeSqwPinMode(DS3231_OFF); // Might be unnecessary
 
   #if USE_NEW_SENSOR
     if (!newSensor.init()) {
-      error(3);
+      // Serial.println(F("Sensor fail"));
+      // error(3);
       return;
     }
     newSensor.setModel(MS5837::MS5837_02BA);
     newSensor.setFluidDensity(FRESHWATER_DENSITY);
+    // Serial.println(F("New sensor OK"));
   #else
     oldSensor.reset();
     oldSensor.begin();
+    // Serial.println(F("Old sensor OK"));
   #endif
   
-  if (!SD.begin(cardSelect)) { // If SD card is not present
-    error(ERROR_SD_CARD_FAILED);
-    return;
-  }
+  // if (!SD.begin(cardSelect)) { // If SD card is not present
+  //   Serial.println(F("SD fail or not present"));
+  //   // error(ERROR_SD_CARD_FAILED);
+  //   return;
+  // }
+  // Serial.println(F("SD started"));
   
   char fileName[FILENAME_LENGTH];
   makeFileName(fileName);
   
-  SdFile::dateTimeCallback(setTimeStamp); // Timestamps the .csv file (inserts as metadata)
+  // SdFile::dateTimeCallback(setTimeStamp); // Timestamps the .csv file (inserts as metadata)
   outputFile = SD.open(fileName, FILE_WRITE); // Opens .csv file
 
   if (outputFile) {
+    // Serial.println(F("File open OK"));
     char serialNumber[16];
     EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
     outputFile.print(F("W.G. Num: "));
@@ -264,33 +268,41 @@ void setup() {
     outputFile.println();
     outputFile.flush();
   } else {
-    error(ERROR_FILE_OPEN_FAILED);
+    // Serial.println(F("File fail"));
+    // error(ERROR_FILE_OPEN_FAILED);
   }
 
   // Create FreeRTOS queue for data points
   dataQueue = xQueueCreate(QUEUE_SIZE, sizeof(DataPoint));
   if (dataQueue == NULL) {
-    error(4);
+    // Serial.println(F("Queue fail"));
+    // error(4);
     return;
   }
+  // Serial.println(F("Queue OK"));
 
   // Create sensor reading task (high priority)
   if (xTaskCreate(sensorTask, "SensorTask", SENSOR_TASK_STACK_SIZE, NULL, SENSOR_TASK_PRIORITY, &sensorTaskHandle) != pdPASS) {
-    error(5);
+    // Serial.println(F("Sensor task fail"));
+    // error(5);
     return;
   }
+  // Serial.println(F("Sensor task OK"));
   
   // Create SD writing task (low priority)
   if (xTaskCreate(sdWriteTask, "SDWriteTask", SD_WRITE_TASK_STACK_SIZE, NULL, SD_WRITE_TASK_PRIORITY, &sdWriteTaskHandle) != pdPASS) {
-    error(6);
+    // Serial.println(F("SD task fail"));
+    // error(6);
     return;
   }
+  // Serial.println(F("SD task OK"));
 
   // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors included in the 32u4 are too weak 
   // for square wave output but should work for interrupts.
 
   Timer1.initialize(sampleTime);
   Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
+  // Serial.println(F("Timer OK"));
 
   #if DELAY_START
     enterRTCDeepSleep();  
@@ -301,9 +313,10 @@ void setup() {
   
   // Start FreeRTOS scheduler
   vTaskStartScheduler();
+  // Serial.println(F("Scheduler started"));
   
   // Should never reach here
-  error(7);
+  // error(7);
 }
 
 // ===========================
@@ -311,7 +324,6 @@ void setup() {
 // ===========================
 void loop() {
   // This should never be reached as FreeRTOS scheduler takes over
-  error(8);
 }
 
 // ===========================
@@ -322,6 +334,7 @@ void triggerSampling() {
     samplingFlag = true;
     // Debug: blink LED to show ISR is firing
     digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    // Serial.println(F("ISR"));
 }
 
 // ===========================
@@ -332,6 +345,7 @@ void resetTimerInterrupt() {
   Timer1.initialize(sampleTime);
   Timer1.attachInterrupt(triggerSampling);
   millisResetFlag = true;
+  // Serial.println(F("Timer reset"));
 }
 
 // ===========================
@@ -350,8 +364,8 @@ void performSensorReading() {
       pres = oldSensor.getPressure(ADC_4096);
     #endif
     
-    int sensorValue = analogRead(batteryPin);
-    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
+    int sensorValue = analogRead(BATTERY_VOLTAGE_PIN);
+    float batteryVoltage = (sensorValue * REFERENCE_VOLTAGE) / MAX_ADC_VALUE;
     float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER; // Adjust multiplier based on your divider
     int millisec = millis() - millisecAtInterrupt;
 
@@ -366,6 +380,9 @@ void performSensorReading() {
     
     // Add to queue (non-blocking)
     if (xQueueSend(dataQueue, &dataPoint, 0) != pdTRUE) {
+      // Serial.println(F("Queue full"));
+    } else {
+      // Serial.println(F("Data queued"));
     }
   }
 
@@ -411,20 +428,20 @@ void setTimeStamp(uint16_t* date, uint16_t* time) {
 // ERRORS/TROUBLESHOOTING
 // ===========================
 // Triggers the LED on pin 13 to blink a certain number of times during unrecoverable errors
-void error (uint8_t errno) {
-  while (1) {
-    uint8_t blinkCount; // Counts error blinks
-    for (blinkCount = 0; blinkCount < errno; blinkCount++) {
-      digitalWrite(LED_PIN, HIGH);
-      delay(ERROR_BLINK_DELAY);
-      digitalWrite(LED_PIN, LOW);
-      delay(ERROR_BLINK_DELAY);
-    }
-    for (blinkCount = errno; blinkCount < ERROR_BLINK_CYCLE; blinkCount++) {
-      delay(ERROR_PAUSE_DELAY);
-    }
-  }
-}
+// void error (uint8_t errno) {
+//   while (1) {
+//     uint8_t blinkCount; // Counts error blinks
+//     for (blinkCount = 0; blinkCount < errno; blinkCount++) {
+//       digitalWrite(LED_PIN, HIGH);
+//       delay(ERROR_BLINK_DELAY);
+//       digitalWrite(LED_PIN, LOW);
+//       delay(ERROR_BLINK_DELAY);
+//     }
+//     for (blinkCount = errno; blinkCount < ERROR_BLINK_CYCLE; blinkCount++) {
+//       delay(ERROR_PAUSE_DELAY);
+//     }
+//   }
+// }
 
 void writeToOutputFile(DateTime now, int millisec,float pressure, float temperature, float batteryVoltage) {
   // Write data to SD card
@@ -447,32 +464,32 @@ void writeToOutputFile(DateTime now, int millisec,float pressure, float temperat
   outputFile.print(",");
   outputFile.print(temperature);
   outputFile.print(",");
-  outputFile.print(batteryVoltage);
+  outputFile.print(batteryVoltage); 
   outputFile.println();
 }
 
-void enterRTCDeepSleep() {
-  // Set RTC alarm to correct date
-  DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
-  rtc.setAlarm1(startDateTime, DS3231_A1_Date); // Alarm 1 triggers at the start time
-  rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every hour, taking a sample to track when/if battery dies
-  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
-  // LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-}
+// void enterRTCDeepSleep() {
+//   // Set RTC alarm to correct date
+//   DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
+//   rtc.setAlarm1(startDateTime, DS3231_A1_Date); // Alarm 1 triggers at the start time
+//   rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every hour, taking a sample to track when/if battery dies
+//   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
+//   // LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+// }
 
-void deepSleepInterrupt() {
-  DateTime now = rtc.now();
-  performSensorReading(); // Call sensor reading directly since we're not in main loop
-  // Use now to set alarm 2 to trigger an hour from now
-  if (now.hour() == 23) {
-    now = DateTime(now.year(), now.month(), now.day(), 0, 0, 0);
-  } else {
-    now = DateTime(now.year(), now.month(), now.day(), now.hour() + 1, now.minute() , now.second());
-  }
-  rtc.setAlarm2(now, DS3231_A2_Hour);
-}
+// void deepSleepInterrupt() {
+//   DateTime now = rtc.now();
+//   performSensorReading(); // Call sensor reading directly since we're not in main loop
+//   // Use now to set alarm 2 to trigger an hour from now
+//   if (now.hour() == 23) {
+//     now = DateTime(now.year(), now.month(), now.day(), 0, 0, 0);
+//   } else {
+//     now = DateTime(now.year(), now.month(), now.day(), now.hour() + 1, now.minute() , now.second());
+//   }
+//   rtc.setAlarm2(now, DS3231_A2_Hour);
+// }
 
 // Idle sleep should be used whenever millisecond tracking is needed or timer 1 is used for sampling
-void setForeverIdleSleep() {
-  // LowPower.idle(SLEEP_FOREVER, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
-}
+// void setForeverIdleSleep() {
+//   // LowPower.idle(SLEEP_FOREVER, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
+// }
