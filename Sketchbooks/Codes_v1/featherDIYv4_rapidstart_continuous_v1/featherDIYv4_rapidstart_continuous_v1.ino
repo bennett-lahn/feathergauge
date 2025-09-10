@@ -1,14 +1,14 @@
 #include <Wire.h>
 #include <SD.h>
-#include "MS5837.h"
+#include "SparkFun_MS5803_I2C.h"
 #include <RTClib.h>
 #include <TimerOne.h>
 
 /* User Inputs */
-float sampleFreq = 10; // sampling frequency in Hz
+float sampleFreq = 6; // sampling frequency in Hz
 
 #define cardSelect 4 // for SD card
-MS5837 pressuresensor; //Initializing global variables
+MS5803 pressuresensor; //Initializing global variables
 RTC_DS3231 rtc;
 File datafile;
 
@@ -58,9 +58,8 @@ void setup() {
   Serial.println("Starting!");
   Wire.begin();
   rtc.begin();
-  pressuresensor.init();
-  pressuresensor.setModel(MS5837::MS5837_02BA);
-  pressuresensor.setFluidDensity(997); //Freshwater density = 997 kg/m^3 , Seawater density = 1029 kg/m^3
+  pressuresensor.reset();
+  pressuresensor.begin();
   Serial.print("Initializing SD card...");
   
   if (!SD.begin(cardSelect)) { //If sd card is not present then this if statement will be triggered
@@ -132,9 +131,8 @@ void loop() {
     if(flag == true){
       Year=now.year(); Month=now.month(); Day=now.day();
       Hour=now.hour(); Minute=now.minute(); Second=now.second();
-      pressuresensor.read();
-      float temp2 = pressuresensor.temperature();
-      float pres = pressuresensor.pressure();
+      float temp2 = pressuresensor.getTemperature(CELSIUS, ADC_512);
+      float pres = pressuresensor.getPressure(ADC_4096);
       j=j+1;
       if (j <= 400) {
         digitalWrite(8, HIGH); //Turns on green LED light to ensure that code has processed through to this point.
@@ -171,5 +169,4 @@ void loop() {
 
 void timerIsr() {
   flag = true;
-  // just pause for logging interval... could put write statement here?
 }

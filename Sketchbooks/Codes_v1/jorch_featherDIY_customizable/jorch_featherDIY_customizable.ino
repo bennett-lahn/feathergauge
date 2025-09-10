@@ -1,39 +1,48 @@
 // Must define a malloc failed hook function
-
+// TODO: Update data formatting so that time 11:2:XX looks like 11:02:XX
+// TODO: Figure out why the first line printed is always 2000/1/1,12:00:00
 // ===========================
 // USER-DEFINED FLAGS: 
 // Please set the following three flags according to your sensor type and preferred collection type.
 // ===========================
+
 // Set to true for MS5837 (new pressure sensor)
 // Set to false for MS5803 (old pressure sensor)
 #define USE_NEW_SENSOR false
 
 // Set to false for rapid start
+// Set to true for delayed start, using selected start date
 #define DELAY_START false
-// TODO: re-implement burst sampling
+
+// Set to true for burst sampling
+// Set to false for constant sampling
+#define BURST_SAMPLING false
 
 // ===========================
 // USER INPUTS:
 // Please set the below variables to reflect your sampling preferences.
 // ===========================
-const float sampleFreq = 8; // Sampling frequency in Hz
+const float sampleFreq = 16; // Sampling frequency in Hz
+
+// Burst sampling alternates between writing and sleeping according to set periods below
+const uint8_t writeMinutes = 10;  // Number of minutes to sample data in burst sampling
+const uint8_t sleepMinutes = 20;  // Number of minutes to sleep in burst sampling
 
 // Edit for DELAY start ONLY
-#if DELAY_START // Preferred date
+#if DELAY_START // Date to start sampling
   const int startYear = 2025; // Year to start sampling
-  const int startMonth = 4; // Month to start sampling
-  const int startDay = 23; // Day to start sampling
+  const int startMonth = 9; // Month to start sampling
+  const int startDay = 8; // Day to start sampling
   const int startHour = 11; // Hour to start sampling (24-hr format)
-  const int startMinute = 33; // Minute to start sampling
+  const int startMinute = 35; // Minute to start sampling
   bool hasStarted = false;
 
 #else // Early dummy date to satisfy later conditional check
   const int startYear = 2000; // DO NOT MODIFY
-  const int startMonth = 1; // DO NOT MODIFY
-  const int startDay = 1; // DO NOT MODIFY
-  const int startHour = 12; // DO NOT MODIFY
-  const int startMinute = 0; // DO NOT MODIFY
-  bool hasStarted = true;
+  const int startMonth = 1;   // DO NOT MODIFY
+  const int startDay = 1;     // DO NOT MODIFY
+  const int startHour = 12;   // DO NOT MODIFY
+  const int startMinute = 0;  // DO NOT MODIFY
 #endif
 
 // =========================== USER: DO NOT EDIT BELOW THIS LINE ===========================
@@ -64,11 +73,11 @@ const float sampleFreq = 8; // Sampling frequency in Hz
 // Create custom MS5803 class to override sensorWait function for better power management
 class CustomMS5803 : public MS5803 {
   public:
-    void sensorWait(uint8_t time) {
-      // sensorWait in SparkFun library is 1-10ms; the minimum sleep time is 16ms; TWI activity from MS5803 should wake the MCU early
-      // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling), and TWI (used to communicate with pressure sensor)
-      LowPower.idle(SLEEP_15MS, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
-    }
+    // void sensorWait(uint8_t time) {
+    //   // sensorWait in SparkFun library is 1-10ms; the minimum sleep time is 16ms; TWI activity from MS5803 should wake the MCU early
+    //   // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling), and TWI (used to communicate with pressure sensor)
+    //   LowPower.idle(SLEEP_15MS, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
+    // }
 };
 
 // ===========================
@@ -81,6 +90,7 @@ class CustomMS5803 : public MS5803 {
 #define BATTERY_VOLTAGE_PIN A9
 
 // Timing and frequency definitions
+#define TWI_CLOCK_SPEED 400000
 #define SERIAL_BAUD_RATE 57600
 #define DELAY_START_CHECK_INTERVAL 500
 #define ERROR_BLINK_DELAY 100
@@ -93,8 +103,8 @@ class CustomMS5803 : public MS5803 {
 #define BATTERY_VOLTAGE_MULTIPLIER 2
 
 // Buffer and data definitions
-#define BUFFER_SIZE 16              // The ATMega 32u4 only has 2560 bytes of SRAM...set buffer size accordingly
-#define BUFFER_WRITE_COUNT 12       // Number of data points that must be present before write occurs; shooting for 512 bytes per write for most efficiency; one line is 40 bytes
+#define BUFFER_SIZE 36              // The ATMega 32u4 only has 2560 bytes of SRAM...set buffer size accordingly
+#define BUFFER_WRITE_COUNT 32       // Number of data points that must be present before write occurs; shooting for 512 bytes per write for most efficiency; one line is 40 bytes
 #define FILENAME_LENGTH 13
 #define MICROSECONDS_PER_SECOND 1000000
 #define FRESHWATER_DENSITY 997
@@ -135,21 +145,22 @@ struct DataPoint {
 RTC_DS3231 rtc;
 File outputFile; // Used to open, write to, and close files on the SD card
 
-const int batteryPin = BATTERY_VOLTAGE_PIN; // Pin where the battery voltage is read; replace with the correct analog pin as needed
-const int maxADCValue = MAX_ADC_VALUE; // The max ADC value for a 10-bit ADC (0-1023)
-
-const float referenceVoltage = REFERENCE_VOLTAGE; // Reference voltage for the ADC (3.3V or 5V depending on your setup)
-
 // Circular buffer variables
-volatile DataPoint dataBuffer[BUFFER_SIZE];
-volatile int bufferHead = 0; // Points to next write position
-volatile int bufferTail = 0; // Points to next read position
-volatile int bufferCount = 0; // Number of items in buffer
-volatile bool bufferOverflow = false; // Flag to indicate buffer overflow
+DataPoint dataBuffer[BUFFER_SIZE];
+int bufferHead = 0; // Points to next write position
+int bufferTail = 0; // Points to next read position
+int bufferCount = 0; // Number of items in buffer
+bool bufferOverflow = false; // Flag to indicate buffer overflow
+
+DateTime timeAtBurstSwitch; // Time burst switched between sleep and record
+DateTime currentSecond;     // Time of current second
+float currentVoltage;       // Voltage of battery, updated every second
 
 // Sampling flag for ISR to main loop communication
 volatile bool samplingFlag = false;
 volatile bool resetTimerFlag = false;
+volatile bool deepSleepFlag = false;
+volatile bool burstSleepFlag = false;
 
 unsigned long millisAtInterrupt = 0; // Number of milliseconds at last 1 Hz interrupt from RTC
 
@@ -164,6 +175,7 @@ void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
   while (!Serial); // Wait for serial connection to be established
   Wire.begin();
+  Wire.setClock(TWI_CLOCK_SPEED);
   
   if (!rtc.begin()) {
     Serial.println(F("RTC Failed to initialize"));
@@ -176,11 +188,11 @@ void setup() {
   rtc.disable32K();
   rtc.clearAlarm(1);
   rtc.clearAlarm(2);
-  rtc.disableAlarm(2);
   rtc.writeSqwPinMode(DS3231_OFF);
 
   if (rtc.lostPower()) {
         // This will adjust to the date and time at compilation; recompile everytime MCU is flashed for accuracy
+        // If the DS3231 has had continous MCU/battery power since last program flash, the time will not be changed
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
         DateTime setTime = rtc.now();
         Serial.print(F("RTC time set to: "));
@@ -244,26 +256,49 @@ void setup() {
     error(ERROR_FILE_OPEN_FAILED);
   }
 
-  Timer1.initialize(sampleTime);
-  Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
-  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING); // Interrupt on pin 1 (INT1) for timer reset / rtc alarm // THIS IS CAUSING PROBLEMS
-
   #if DELAY_START
-    enterRTCDeepSleep();  
+    enterDelayDeepSleep();      
   #else
     DateTime now = rtc.now();
+    rtc.disableAlarm(2);
     // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
     rtc.setAlarm1(rtc.now() + TimeSpan(1), DS3231_A1_PerSecond); 
+    Timer1.initialize(sampleTime);
+    Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
+    attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
+    millisAtInterrupt = millis();
+    // Serial.println(F("READY!"));
   #endif
-  millisAtInterrupt = millis();
-
-  Serial.println(F("READY!"));
 }
 
 // ===========================
 // DATA COLLECTION LOOP
 // ===========================
 void loop() {
+    if (deepSleepFlag) {
+      deepSleepLog();
+    }
+
+    if (burstSleepFlag) {
+      burstSleepFlag = false;
+      resetTimer();
+      timeAtBurstSwitch = rtc.now();
+    }
+
+    #if BURST_SAMPLING
+      TimeSpan elapsed = rtc.now() - timeAtBurstSwitch;
+      // If true, write time ended; write to SD card and sleep
+      if (elapsed.totalseconds() > writeMinutes * 60) {
+        DataPoint data;
+        while (readFromBuffer(&data)) {
+          writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, data.batteryVoltage);
+        }
+      }
+      outputFile.flush();
+      enterBurstDeepSleep();
+      }
+    #endif
+
     if (bufferOverflow) {
       Serial.println(F("WARNING: Buffer overflow detected!"));
       // TODO: Add some sort of flag to file to indicate that an error occurred
@@ -278,10 +313,7 @@ void loop() {
     if (resetTimerFlag) {
       // Serial.print("Resetting millis, was: ");
       // Serial.println(millisAtInterrupt);
-      Timer1.restart();
-      millisAtInterrupt = millis();
-      rtc.clearAlarm(1);
-      rtc.setAlarm1(rtc.now() + TimeSpan(1), DS3231_A1_PerSecond);
+      resetTimer();
       resetTimerFlag = false;
       // Serial.print("Now: ");
       // Serial.println(millisAtInterrupt);
@@ -315,7 +347,7 @@ void triggerSampling() {
 }
 
 void performSensorReading() {
-    DateTime now = rtc.now();
+    DateTime now = currentSecond;
     
     float temp2, pres;
     #if USE_NEW_SENSOR
@@ -326,10 +358,7 @@ void performSensorReading() {
       temp2 = oldSensor.getTemperature(CELSIUS, ADC_512);
       pres = oldSensor.getPressure(ADC_4096);
     #endif
-    
-    int sensorValue = analogRead(batteryPin);
-    float batteryVoltage = (sensorValue * referenceVoltage) / maxADCValue;
-    float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER; // Adjust multiplier based on your divider
+    float actualBatteryVoltage = currentVoltage;
     uint16_t millisec = (millis() - millisAtInterrupt) % 1000; // If above 1000, rollover to next second
 
     addToBuffer(now, millisec, pres, temp2, actualBatteryVoltage);
@@ -363,6 +392,21 @@ void performSensorReading() {
 // Sets flag to reset the timer interrupt every second according to RTC to prevent timer desyncing from the RTC
 void resetTimerInterrupt() {
   resetTimerFlag = true;
+}
+
+void resetTimer() {
+  millisAtInterrupt = millis();
+  currentSecond = rtc.now();
+  currentVoltage = getBatteryVoltage();
+  rtc.clearAlarm(1);
+  rtc.setAlarm1(currentSecond + TimeSpan(1), DS3231_A1_PerSecond);
+}
+
+float getBatteryVoltage() {
+  int sensorValue = analogRead(BATTERY_VOLTAGE_PIN);
+  float batteryVoltage = (sensorValue * REFERENCE_VOLTAGE) / MAX_ADC_VALUE; // Adafruit docs says this should also multiply by 2?
+  float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER; // Adjust multiplier based on your divider
+  return actualBatteryVoltage;
 }
 
 void makeFileName(char* fileName) {
@@ -488,35 +532,67 @@ void writeToOutputFile(DateTime now, int millisec,float pressure, float temperat
   outputFile.print(pressure);
   outputFile.print(",");
   outputFile.print(temperature);
-  outputFile.print(",");
-  outputFile.print(batteryVoltage);
+  // outputFile.print(",");
+  // outputFile.print(batteryVoltage);
   outputFile.println();
 }
 
-void enterRTCDeepSleep() {
+void deepSleepInterrupt() {
+  deepSleepFlag = true;
+}
+
+void deepSleepLog() {
+  deepSleepFlag = false;
+  DateTime now = rtc.now();
+  DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
+  if (now.unixtime() > startDateTime.unixtime()) {
+    rtc.clearAlarm(1);
+    rtc.clearAlarm(2);
+    rtc.disableAlarm(2);
+    // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
+    rtc.setAlarm1(now + TimeSpan(1), DS3231_A1_PerSecond);
+    #if BURST_SAMPLING
+      timeAtBurstSwitch = rtc.now();
+    #endif
+    Timer1.initialize(sampleTime);
+    Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
+    attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
+    millisAtInterrupt = millis();
+    // Now continue with regular program execution
+  } else {
+    performSensorReading();
+    DataPoint data;
+    writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, data.batteryVoltage);
+    outputFile.flush();
+    rtc.clearAlarm(1);
+    rtc.clearAlarm(2);
+    enterDelayDeepSleep();
+  }
+}
+
+void enterDelayDeepSleep() {
   // Set RTC alarm to correct date
   // Serial.println(F("Entering RTC deep sleep"));
   DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
   rtc.setAlarm1(startDateTime, DS3231_A1_Date); // Alarm 1 triggers at the start time
-  rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every hour, taking a sample to track when/if battery dies
+  rtc.setAlarm2(startDateTime, DS3231_A2_PerMinute); // Alarm 2 triggers every hour, taking a sample to track when/if battery dies
   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
 }
 
-// TODO: Shorten interrupt
-void deepSleepInterrupt() {
-  DateTime now = rtc.now();
-  performSensorReading(); // Call sensor reading directly since we're not in main loop
-  // Use now to set alarm 2 to trigger an hour from now
-  if (now.hour() == 23) {
-    now = DateTime(now.year(), now.month(), now.day(), 0, 0, 0);
-  } else {
-    now = DateTime(now.year(), now.month(), now.day(), now.hour() + 1, now.minute() , now.second());
-  }
-  rtc.setAlarm2(now, DS3231_A2_Hour);
+void enterBurstDeepSleep() {
+  DateTime nextWake(rtc.now() + TimeSpan(0, 0, sleepMinutes, 0));
+  rtc.clearAlarm(1);
+  rtc.setAlarm1(nextWake, DS3231_A1_Date);
+  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), burstSleepInterrupt, FALLING);
+  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
 }
 
-// Idle sleep should be used whenever millisecond tracking is needed or timer 1 is used for sampling
+void burstSleepInterrupt() {
+  burstSleepFlag = true;
+}
+
+// Idle sleep should be used whenever millisecond tracking (timer 0) is needed or timer 1 is used for sampling
 void setForeverIdleSleep() {
   LowPower.idle(SLEEP_FOREVER, ADC_OFF, TIMER4_OFF, TIMER3_OFF, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
 }

@@ -122,6 +122,65 @@ def calculate_sampling_rate(timestamps: List[datetime]) -> float:
     return 1.0 / avg_diff if avg_diff > 0 else 0.0
 
 
+def analyze_data_gaps(timestamps: List[datetime], expected_sampling_rate: float) -> List[dict]:
+    """
+    Analyze data gaps and count data points between gaps.
+    
+    Args:
+        timestamps: List of parsed timestamps
+        expected_sampling_rate: Expected sampling rate in Hz
+    
+    Returns:
+        List of dictionaries containing gap analysis and point counts
+    """
+    if len(timestamps) < 2:
+        return []
+    
+    expected_diff = 1.0 / expected_sampling_rate if expected_sampling_rate > 0 else 0
+    gap_threshold = expected_diff * 1.5  # More than 50% longer than expected
+    
+    gap_analysis = []
+    current_segment_start = 0
+    current_segment_points = 0
+    
+    for i in range(1, len(timestamps)):
+        time_diff = (timestamps[i] - timestamps[i-1]).total_seconds()
+        
+        if time_diff > gap_threshold:
+            # Gap detected - record the previous segment
+            if current_segment_points > 0:
+                gap_analysis.append({
+                    'segment_start_index': current_segment_start,
+                    'segment_end_index': i - 1,
+                    'point_count': current_segment_points,
+                    'gap_index': i,
+                    'gap_duration': time_diff,
+                    'expected_diff': expected_diff,
+                    'gap_size': time_diff - expected_diff
+                })
+            
+            # Start new segment
+            current_segment_start = i
+            current_segment_points = 1
+        else:
+            # Normal interval - increment point count
+            current_segment_points += 1
+    
+    # Record the final segment
+    if current_segment_points > 0:
+        gap_analysis.append({
+            'segment_start_index': current_segment_start,
+            'segment_end_index': len(timestamps) - 1,
+            'point_count': current_segment_points,
+            'gap_index': None,  # No gap after final segment
+            'gap_duration': None,
+            'expected_diff': expected_diff,
+            'gap_size': None
+        })
+    
+    return gap_analysis
+
+
 def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -> dict:
     """
     Analyze CSV data and compare actual vs expected data points.
@@ -148,7 +207,7 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
             
             # Parse header
             header_line = lines[0].strip()
-            print(f"Debug - Header: {header_line}")
+            # print(f"Debug - Header: {header_line}")
             
             # Check if header contains "W.G. Num:" and extract column names
             if 'W.G. Num:' in header_line and ',' in header_line:
@@ -157,13 +216,13 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
                 if len(header_parts) >= 5:  # W.G. Num + 4 data columns
                     # Create a custom fieldnames list, ignoring the W.G. Num part
                     fieldnames = header_parts[1:]  # Skip the first part (W.G. Num)
-                    print(f"Debug - Extracted fieldnames: {fieldnames}")
+                    # print(f"Debug - Extracted fieldnames: {fieldnames}")
                 else:
                     raise ValueError(f"Unexpected header format: {header_line}")
             else:
                 # Normal CSV processing
                 fieldnames = header_line.split(',')
-                print(f"Debug - Normal fieldnames: {fieldnames}")
+                # print(f"Debug - Normal fieldnames: {fieldnames}")
             
             # Validate expected columns
             expected_columns = ['Timestamp', 'Pressure [mbar]', 'Temp [deg C]', 'Battery [VDC]']
@@ -181,7 +240,7 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
                     
                     # Split the line by commas
                     values = line.split(',')
-                    print(f"Debug - Row {row_num}: {values}")
+                    # print(f"Debug - Row {row_num}: {values}")
                     
                     # Create a dictionary mapping fieldnames to values
                     if len(values) >= len(fieldnames):
@@ -248,7 +307,7 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
     point_difference = actual_points - expected_points
     percentage_diff = (point_difference / expected_points * 100) if expected_points > 0 else 0
     
-    # Analyze gaps in data
+    # Analyze gaps in data (legacy format for backward compatibility)
     gaps = []
     for i in range(1, len(timestamps)):
         time_diff = (timestamps[i] - timestamps[i-1]).total_seconds()
@@ -260,6 +319,9 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
                 'expected_diff': expected_diff,
                 'gap_size': time_diff - expected_diff
             })
+    
+    # Analyze data segments between gaps
+    gap_analysis = analyze_data_gaps(timestamps, expected_sampling_rate)
     
     return {
         'file_path': csv_file_path,
@@ -273,6 +335,7 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
         'expected_sampling_rate': expected_sampling_rate,
         'actual_sampling_rate': actual_sampling_rate,
         'gaps': gaps,
+        'gap_analysis': gap_analysis,
         'data_completeness': (actual_points / expected_points * 100) if expected_points > 0 else 0
     }
 
@@ -312,6 +375,32 @@ def print_analysis_results(results: dict):
             print(f"  ... and {len(results['gaps']) - 10} more gaps")
         print()
     
+    # Display data segments between gaps
+    if results['gap_analysis']:
+        print("DATA SEGMENTS BETWEEN GAPS:")
+        print("  (Shows number of consecutive data points between gaps)")
+        for i, segment in enumerate(results['gap_analysis']):
+            if segment['gap_index'] is not None:
+                print(f"  Segment {i+1}: {segment['point_count']} points "
+                      f"(indices {segment['segment_start_index']}-{segment['segment_end_index']}) "
+                      f"→ Gap at index {segment['gap_index']} "
+                      f"(duration: {segment['gap_duration']:.2f}s)")
+            else:
+                print(f"  Final Segment {i+1}: {segment['point_count']} points "
+                      f"(indices {segment['segment_start_index']}-{segment['segment_end_index']}) "
+                      f"→ End of data")
+        
+        # Summary statistics
+        point_counts = [seg['point_count'] for seg in results['gap_analysis']]
+        if point_counts:
+            print(f"\n  SEGMENT STATISTICS:")
+            print(f"    Total segments: {len(point_counts)}")
+            print(f"    Points per segment - Min: {min(point_counts)}, "
+                  f"Max: {max(point_counts)}, "
+                  f"Avg: {sum(point_counts)/len(point_counts):.1f}")
+            print(f"    Total points in segments: {sum(point_counts)}")
+        print()
+    
     # Summary assessment
     print("ASSESSMENT:")
     if abs(results['percentage_diff']) < 1:
@@ -325,6 +414,19 @@ def print_analysis_results(results: dict):
         print(f"  ⚠ {len(results['gaps'])} data gaps detected")
     else:
         print("  ✓ No significant data gaps detected")
+    
+    # Additional assessment based on segment analysis
+    if results['gap_analysis']:
+        point_counts = [seg['point_count'] for seg in results['gap_analysis']]
+        if len(point_counts) > 1:
+            avg_segment_size = sum(point_counts) / len(point_counts)
+            expected_segment_size = results['expected_sampling_rate'] * 60  # Expected points per minute
+            if avg_segment_size < expected_segment_size * 0.5:
+                print("  ⚠ Data segments are shorter than expected - frequent interruptions")
+            elif avg_segment_size > expected_segment_size * 2:
+                print("  ✓ Data segments are longer than expected - good continuity")
+        else:
+            print("  ✓ Single continuous data segment detected")
 
 
 def main():
