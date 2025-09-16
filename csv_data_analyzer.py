@@ -376,19 +376,19 @@ def print_analysis_results(results: dict):
         print()
     
     # Display data segments between gaps
-    if results['gap_analysis']:
-        print("DATA SEGMENTS BETWEEN GAPS:")
-        print("  (Shows number of consecutive data points between gaps)")
-        for i, segment in enumerate(results['gap_analysis']):
-            if segment['gap_index'] is not None:
-                print(f"  Segment {i+1}: {segment['point_count']} points "
-                      f"(indices {segment['segment_start_index']}-{segment['segment_end_index']}) "
-                      f"→ Gap at index {segment['gap_index']} "
-                      f"(duration: {segment['gap_duration']:.2f}s)")
-            else:
-                print(f"  Final Segment {i+1}: {segment['point_count']} points "
-                      f"(indices {segment['segment_start_index']}-{segment['segment_end_index']}) "
-                      f"→ End of data")
+    # if results['gap_analysis']:
+    #     print("DATA SEGMENTS BETWEEN GAPS:")
+    #     print("  (Shows number of consecutive data points between gaps)")
+    #     for i, segment in enumerate(results['gap_analysis']):
+    #         if segment['gap_index'] is not None:
+    #             print(f"  Segment {i+1}: {segment['point_count']} points "
+    #                   f"(indices {segment['segment_start_index']}-{segment['segment_end_index']}) "
+    #                   f"→ Gap at index {segment['gap_index']} "
+    #                   f"(duration: {segment['gap_duration']:.2f}s)")
+    #         else:
+    #             print(f"  Final Segment {i+1}: {segment['point_count']} points "
+    #                   f"(indices {segment['segment_start_index']}-{segment['segment_end_index']}) "
+    #                   f"→ End of data")
         
         # Summary statistics
         point_counts = [seg['point_count'] for seg in results['gap_analysis']]

@@ -624,6 +624,21 @@ void deepSleepLog() {
   }
 }
 
+DateTime now = rtc.now();
+rtc.disableAlarm(2);
+// Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
+rtc.clearAlarm(1);
+rtc.setAlarm1(rtc.now() + TimeSpan(1), DS3231_A1_PerSecond); 
+#if !BURST_SAMPLING_ONE_SAMPLE
+  Timer1.initialize(SAMPLE_TIME);
+  Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
+  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
+#endif
+millisAtInterrupt = millis();
+// Serial.println(F("READY!"));
+#if BURST_SAMPLING
+  timeAtBurstSwitch = rtc.now();
+
 void enterDelayDeepSleep() {
   // Set RTC alarm to correct date
   // Serial.println(F("Entering RTC deep sleep"));
