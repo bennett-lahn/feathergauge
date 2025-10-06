@@ -117,6 +117,11 @@ def _robust_read(path: str) -> pd.DataFrame:
     if len(df) > 100000:
         print(f"  Large dataset detected, sampling every 100th row before timestamp parsing...")
         df = df.iloc[::100].reset_index(drop=True)
+        # Record sampling factor so downstream computations (e.g., Hz) can compensate
+        try:
+            df.attrs["sampling_factor"] = float(df.attrs.get("sampling_factor", 1.0)) * 100.0
+        except Exception:
+            df.attrs["sampling_factor"] = 100.0
         print(f"  Sampled {len(df)} rows from original dataset (1% sampling)")
     
     # Detect data format by checking if first row has combined timestamp
@@ -154,7 +159,13 @@ def _robust_read(path: str) -> pd.DataFrame:
 
     # Filter out obviously bad voltages
     df = df[(df["battery_v"] > 2.0) & (df["battery_v"] < 6.0)].copy()
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    # Preserve any sampling factor metadata
+    try:
+        df.attrs["sampling_factor"] = float(df.attrs.get("sampling_factor", 1.0))
+    except Exception:
+        pass
+    # Preserve original row order to detect backward time jumps later
+    df = df.reset_index(drop=True)
     print(f"  Final data shape: {df.shape}")
     
     # Debug output
@@ -193,6 +204,32 @@ def _select_burst_end_rows(df: pd.DataFrame, gap_seconds: float) -> pd.DataFrame
     return df[is_end].reset_index(drop=True)
 
 
+def _elapsed_with_resets(ts: pd.Series, threshold_seconds: float = 60.0) -> np.ndarray:
+    """Compute elapsed seconds from a timestamp series while handling backward jumps.
+
+    When time moves backward by more than threshold_seconds, start a new segment
+    and continue accumulating total elapsed time across segments.
+    """
+    if ts.empty:
+        return np.array([], dtype=float)
+
+    base_elapsed = 0.0
+    segment_start = ts.iloc[0]
+    last_ts = ts.iloc[0]
+    out: list[float] = []
+
+    for cur in ts:
+        delta = (cur - last_ts).total_seconds()
+        if delta < -threshold_seconds:
+            base_elapsed += max(0.0, (last_ts - segment_start).total_seconds())
+            segment_start = cur
+        current_segment_elapsed = max(0.0, (cur - segment_start).total_seconds())
+        out.append(base_elapsed + current_segment_elapsed)
+        last_ts = cur
+
+    return np.asarray(out, dtype=float)
+
+
 def _classify_dataset(path: str) -> Tuple[str, str]:
     """Classify dataset mode and assign label based on filename.
 
@@ -221,16 +258,53 @@ def _prepare_time_series(
     Sampling is done earlier in the data processing pipeline.
     """
     print(f"  Preparing time series for {mode} dataset...")
-    df_use = df.sort_values("timestamp").reset_index(drop=True)
-    print(f"  Sorted data shape: {df_use.shape}")
+    df_use = df.reset_index(drop=True)
+    print(f"  Data shape: {df_use.shape}")
 
-    print("  Computing elapsed time...")
-    t0 = df_use["timestamp"].iloc[0]
-    dt_seconds = (df_use["timestamp"] - t0).dt.total_seconds().to_numpy(dtype=float)
+    print("  Computing elapsed time with backward-jump handling...")
+
+    dt_seconds = _elapsed_with_resets(df_use["timestamp"])  # seconds
     t_values = dt_seconds / 3600.0 if to_hours else dt_seconds / 60.0
     v_values = df_use["battery_v"].to_numpy(dtype=float)
     print(f"  Time series prepared: {len(t_values)} points")
     return t_values, v_values
+
+
+def _compute_avg_hz_series(df: pd.DataFrame, to_hours: bool) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute rolling 1-hour average sampling rate (Hz) vs elapsed time.
+
+    If dataset is very large (>100k rows), downsample to 1% before computing.
+    Returns arrays aligned to the same time unit as plots (minutes or hours).
+    """
+    if df.empty:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    df_use = df.reset_index(drop=True)
+    # Start with any pre-applied global sampling factor from the loader
+    sampling_factor = float(df.attrs.get("sampling_factor", 1.0))
+    if len(df_use) > 100000:
+        df_use = df_use.iloc[::100].reset_index(drop=True)
+        sampling_factor *= 100.0  # compensate for additional 1% downsampling here
+
+    # Elapsed time (seconds) with backward-jump handling
+    elapsed_s = _elapsed_with_resets(df_use["timestamp"])  # seconds
+    if len(elapsed_s) == 0:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    # Instantaneous Hz from positive forward deltas only
+    delta_s = np.diff(df_use["timestamp"]).astype("timedelta64[ns]").astype(np.int64) / 1e9
+    delta_s = np.where(delta_s > 0, delta_s, np.nan)
+    inst_hz = np.empty_like(elapsed_s, dtype=float)
+    inst_hz[:] = np.nan
+    inst_hz[1:] = (1.0 / delta_s) * sampling_factor
+
+    # Time-based rolling mean over 10 minutes
+    t_index = pd.to_timedelta(elapsed_s, unit="s")
+    s = pd.Series(inst_hz, index=t_index)
+    hz_avg = s.rolling("10min").mean().to_numpy()
+
+    t_values = elapsed_s / 3600.0 if to_hours else elapsed_s / 60.0
+    return t_values, hz_avg
 
 
 # ------------------------------- Curve Model ------------------------------ #
@@ -336,7 +410,7 @@ def fit_logistic(time_values: np.ndarray, voltage_values: np.ndarray) -> FitResu
 # --------------------------------- Plotting -------------------------------- #
 
 def plot_multi_series(
-    series: List[Tuple[np.ndarray, np.ndarray, Tuple[float, float, float, float], str, str]],
+    series: List[Tuple[np.ndarray, np.ndarray, Tuple[float, float, float, float], str, str, np.ndarray, np.ndarray]],
     time_unit_label: str,
     savefig: str | None = None,
 ) -> None:
@@ -352,17 +426,20 @@ def plot_multi_series(
 
     # Determine time range for projection
     print("  Determining time range...")
-    all_t_max = max([float(np.max(t_values)) for t_values, _, _, _, _ in series if len(t_values) > 0], default=0.0)
+    all_t_max = max([float(np.max(s[0])) for s in series if len(s[0]) > 0], default=0.0)
     
-    # If data spans less than 4 months, extend to 4 months for projection
+    # Project up to at least 1500 hours (or 90,000 minutes) to show estimates
     if time_unit_label == "hours":
-        t_max_plot = max(all_t_max, 2880.0)  # 4 months = 2880 hours
+        t_max_plot = max(all_t_max, 800.0)
     else:  # minutes
-        t_max_plot = max(all_t_max, 172800.0)  # 4 months = 172800 minutes
+        t_max_plot = max(all_t_max, 48000.0)
     
     print(f"  Plotting time range: 0 to {t_max_plot:.1f} {time_unit_label}")
 
-    for idx, (t_values, v_values, fit_params, label, mode) in enumerate(series):
+    ax = plt.gca()
+    ax2 = ax.twinx()
+
+    for idx, (t_values, v_values, fit_params, label, mode, hz_t, hz_avg) in enumerate(series):
         print(f"  Plotting series {idx+1}/{len(series)}: {label}")
         color = colors[idx % len(colors)]
         v_min, delta_v, t0, tau = fit_params
@@ -385,26 +462,36 @@ def plot_multi_series(
             t_grid = np.linspace(0.0, t_max_plot, 100)
         v_fit = logistic_discharge(t_grid, v_min, delta_v, t0, tau)
 
-        # Measured data (scatter plots for both continuous and burst)
-        plt.scatter(t_values, v_values, s=20, color=color, alpha=0.85, label=f"{label} (measured)")
+        # Measured voltage
+        ax.scatter(t_values, v_values, s=20, color=color, alpha=0.85, label=f"{label} (measured)")
 
         # Fit curve (show full projection)
-        plt.plot(t_grid, v_fit, linestyle="--", linewidth=2.0, color=color, alpha=0.95, label=f"{label} (fit)")
+        ax.plot(t_grid, v_fit, linestyle="--", linewidth=2.0, color=color, alpha=0.95, label=f"{label} (fit)")
         
         # Add death threshold lines if within plot range
         if np.isfinite(t_death_3v) and t_death_3v <= t_max_plot:
-            plt.axvline(x=t_death_3v, color=color, linestyle=':', alpha=0.7, linewidth=1)
-            plt.text(t_death_3v, 3.1, f'3.0V\n{t_death_3v:.0f}h', ha='center', va='bottom', fontsize=8, color=color)
+            ax.axvline(x=t_death_3v, color=color, linestyle=':', alpha=0.7, linewidth=1)
+            ax.text(t_death_3v, 3.1, f'3.0V\n{t_death_3v:.0f}h', ha='center', va='bottom', fontsize=8, color=color)
+
+        # Average Hz on secondary y-axis
+        if len(hz_t) > 1 and np.isfinite(np.nanmean(hz_avg)):
+            ax2.plot(hz_t, hz_avg, linewidth=1.2, color=color, alpha=0.6, label=f"{label} (avg Hz, 10min)")
 
     print("  Adding plot elements...")
-    plt.xlabel(f"Time since start [{time_unit_label}]")
-    plt.ylabel("Battery Voltage [V]")
-    plt.title("Battery Voltage Over Time (Elapsed) with Sigmoidal Fits and 4-Month Projection")
-    plt.grid(True, alpha=0.3)
+    ax.set_xlabel(f"Time since start [{time_unit_label}]")
+    ax.set_ylabel("Battery Voltage [V]")
+    # Adaptive title based on plotted max range
+    title_range = f"0–{int(round(t_max_plot))} {time_unit_label}"
+    plt.title(f"Battery Voltage with Sigmoidal Fits and Avg Hz ({title_range})")
+    ax.grid(True, alpha=0.3)
 
     # Requested y-axis range: 3–5 V
-    plt.ylim(3.0, 5.0)
-    plt.legend(ncol=2)
+    ax.set_ylim(3.0, 5.0)
+    ax2.set_ylabel("Avg sampling rate [Hz] (10min rolling)")
+    # Build combined legend
+    handles1, labels1 = ax.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(handles1 + handles2, labels1 + labels2, ncol=2)
 
     if savefig:
         print(f"  Saving plot to {savefig}...")
@@ -440,7 +527,7 @@ def main() -> None:
     to_hours = args.time_unit == "hours"
     time_label = "hours" if to_hours else "minutes"
 
-    series: List[Tuple[np.ndarray, np.ndarray, Tuple[float, float, float, float], str, str]] = []
+    series: List[Tuple[np.ndarray, np.ndarray, Tuple[float, float, float, float], str, str, np.ndarray, np.ndarray]] = []
 
     for i, path in enumerate(file_list):
         print(f"\n=== Processing file {i+1}/{len(file_list)}: {path} ===")
@@ -452,6 +539,7 @@ def main() -> None:
         mode, label = _classify_dataset(path)
         print(f"Dataset classified as: {mode} - {label}")
         t_values, v_values = _prepare_time_series(df, mode=mode, gap_seconds=args.gap_seconds, to_hours=to_hours)
+        hz_t, hz_avg = _compute_avg_hz_series(df, to_hours=to_hours)
 
         if len(t_values) == 0 or len(v_values) == 0:
             print(f"Skipping {path}: no usable time/voltage values.")
@@ -459,7 +547,7 @@ def main() -> None:
 
         fit = fit_logistic(t_values, v_values)
         print(f"Final result: {label} -> Fit (v_min, delta_v, t0, tau): {fit.params}; R^2 = {fit.r2 if np.isfinite(fit.r2) else float('nan')}")
-        series.append((t_values, v_values, fit.params, label, mode))
+        series.append((t_values, v_values, fit.params, label, mode, hz_t, hz_avg))
 
     if not series:
         raise SystemExit("No datasets to plot.")
