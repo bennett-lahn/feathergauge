@@ -1,3 +1,9 @@
+# Compilation output
+*.hex
+*.elf
+*.eep
+*.bin
+
 # Data files
 *.CSV
 *.csv
