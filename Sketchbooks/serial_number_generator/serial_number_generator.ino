@@ -14,12 +14,17 @@
 */
 #include <EEPROM.h>
 
+#define EEPROM_BUFFER_SIZE 16
+#define EEPROM_SERIAL_NUM_ADDR 0
+#define SERIAL_BAUD_RATE 57600
+
+
 // Serial number buffer
-char serialnumber[16] = "-1\0";
-char userInput[16] = "";
+char serialnumber[EEPROM_BUFFER_SIZE] = "-1\0";
+char userInput[EEPROM_BUFFER_SIZE] = "";
 
 void setup(){
-	Serial.begin(9600);
+	Serial.begin(SERIAL_BAUD_RATE);
 	
 	// Wait for serial connection
 	while (!Serial);
@@ -49,10 +54,10 @@ void setup(){
 	
 	// Put the contents of serialnumber in EEPROM starting at
 	// address 0
-	EEPROM.put(0, serialnumber);
+	EEPROM.put(EEPROM_SERIAL_NUM_ADDR, serialnumber);
 	
 	char output[sizeof(serialnumber)];
-	EEPROM.get(0, output);
+	EEPROM.get(EEPROM_SERIAL_NUM_ADDR, output);
 	Serial.print("Read serial number from EEPROM: ");
 	Serial.println(output);
 			

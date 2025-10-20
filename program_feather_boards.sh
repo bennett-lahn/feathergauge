@@ -4,13 +4,16 @@
 # This script compiles Arduino code and programs multiple Adafruit Feather 32u4 boards
 # using arduino-cli for compilation and avrdude for programming
 
+# Caution: this file overwrites your current arduino-cli cofig settings
+
 set -e  # Exit on any error
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARDUINO_SKETCH_DIR="${SCRIPT_DIR}/Sketchbooks/Codes_v1/jorch_featherDIY_customizable"
 RTC_SETUP_SKETCH_DIR="${SCRIPT_DIR}/Sketchbooks/Codes_v1/rtc_setup"
-LIBRARY_CONFIG_DIR="${SCRIPT_DIR}/library_config"
+EEPROM_TEST_SKETCH_DIR="${SCRIPT_DIR}/Sketchbooks/eeprom_test"
+LIBRARY_CONFIG_DIR="${SCRIPT_DIR}/libraries"
 BOARD_FQBN="adafruit:avr:feather32u4"
 COMPILED_SKETCH_DIR="${SCRIPT_DIR}/compiled_sketches"
 LOG_FILE="${SCRIPT_DIR}/programming_log_$(date +%Y%m%d_%H%M%S).log"
@@ -24,7 +27,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Logging function
+# Logging functions
 log() {
     echo -e "$1" | tee -a "$LOG_FILE"
 }
@@ -66,7 +69,7 @@ check_dependencies() {
     if [ ${#missing_tools[@]} -ne 0 ]; then
         log_error "Missing required tools: ${missing_tools[*]}"
         log_info "Install instructions:"
-        log_info "  arduino-cli: https://arduino.github.io/arduino-cli/latest/installation/"
+        log_info "  arduino-cli: sudo snap install arduino-cli https://arduino.github.io/arduino-cli/latest/installation/"
         log_info "  avrdude: sudo apt-get install avrdude (Ubuntu/Debian) or brew install avrdude (macOS)"
         log_info "  python3: sudo apt-get install python3 (Ubuntu/Debian) or brew install python3 (macOS)"
         exit 1
@@ -81,24 +84,46 @@ setup_arduino_cli() {
     
     # Initialize Arduino CLI if not already done
     if [ ! -f ~/.arduino15/arduino-cli.yaml ]; then
-        arduino-cli config init
+        arduino-cli config init --overwrite
     fi
     
-    # Add Adafruit board package
-    arduino-cli core update-index --additional-urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+    # Persist Adafruit boards manager URL in config and install the cores
+    arduino-cli config set board_manager.additional_urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+    # Allow installing libraries from ZIPs
+    arduino-cli config set library.enable_unsafe_install true
+    arduino-cli core update-index
+    # Install base Arduino AVR core (dependency) and Adafruit AVR core
+    arduino-cli core install arduino:avr || true
     arduino-cli core install adafruit:avr
     
+    # Ensure common core libraries are available
+    install_core_libraries
+    
     # Install libraries from local files
+    # It is more likely that updates to these libraries will break things, so a local copy is maintained instead
     install_local_libraries
     
     log_success "Arduino CLI setup complete"
 }
 
-# Install libraries from local files in library_config directory
+# Install common Arduino core libraries used by sketches
+install_core_libraries() {
+    log_info "Ensuring core libraries are installed (SD)..."
+    local core_libs=(`SD)
+    for lib in "${core_libs[@]}"; do
+        if arduino-cli lib install "$lib"; then
+            log_success "Library installed: $lib"
+        else
+            log_warning "Failed to install library: $lib"
+        fi
+    done
+}
+
+# Install libraries from local files in libraries directory
 install_local_libraries() {
     log_info "Installing libraries from local files..."
     
-    local library_config_dir="${SCRIPT_DIR}/library_config"
+    local library_config_dir="${SCRIPT_DIR}/libraries"
     local libraries_dir="${SCRIPT_DIR}/libraries"
     
     # Create libraries directory if it doesn't exist
@@ -106,7 +131,7 @@ install_local_libraries() {
     
     # Check if library_config directory exists
     if [ ! -d "$library_config_dir" ]; then
-        log_warning "library_config directory not found: $library_config_dir"
+        log_warning "libraries directory not found: $library_config_dir"
         log_info "Please create the directory and add your library files"
         return 1
     fi
@@ -137,15 +162,33 @@ install_local_libraries() {
     
     log_info "Found ${#library_files[@]} library file(s) to install"
     
+    # Ensure user libraries directory exists
+    local user_libraries_dir="$HOME/Arduino/libraries"
+    mkdir -p "$user_libraries_dir"
+    
     # Install each library
     for library_file in "${library_files[@]}"; do
         local library_name=$(basename "$library_file")
         log_info "Installing library: $library_name"
         
-        if arduino-cli lib install "$library_file"; then
-            log_success "Successfully installed: $library_name"
+        if [ -f "$library_file" ]; then
+            # ZIP/TAR archive install via arduino-cli
+            if arduino-cli lib install --zip-path "$library_file"; then
+                log_success "Successfully installed: $library_name"
+            else
+                log_warning "Failed to install: $library_name"
+            fi
+        elif [ -d "$library_file" ]; then
+            # Copy library directory directly into user libraries
+            local dest_dir="$user_libraries_dir/$(basename "$library_file")"
+            rm -rf "$dest_dir"
+            if cp -R "$library_file" "$dest_dir"; then
+                log_success "Copied library directory: $library_name"
+            else
+                log_warning "Failed to copy library directory: $library_name"
+            fi
         else
-            log_warning "Failed to install: $library_name"
+            log_warning "Unknown library item type: $library_name"
         fi
     done
 }
@@ -170,10 +213,10 @@ compile_sketch() {
     fi
     
     # Compile the sketch
+    # In the future, could use CPP flags to make code configuration modifiable without editing code
     arduino-cli compile \
         --fqbn "$BOARD_FQBN" \
         --output-dir "$COMPILED_SKETCH_DIR" \
-        --build-property "compiler.cpp.extra_flags=-DUSE_NEW_SENSOR=false -DDELAY_START=false -DBURST_SAMPLING=false" \
         "$ARDUINO_SKETCH_DIR"
     
     if [ $? -eq 0 ]; then
@@ -209,6 +252,29 @@ compile_rtc_setup_sketch() {
     fi
 }
 
+# Compile the EEPROM test sketch
+compile_eeprom_test_sketch() {
+    log_info "Compiling EEPROM test sketch..."
+    
+    if [ ! -f "$EEPROM_TEST_SKETCH_DIR/eeprom_test.ino" ]; then
+        log_error "EEPROM test sketch file not found: $EEPROM_TEST_SKETCH_DIR/eeprom_test.ino"
+        exit 1
+    fi
+    
+    arduino-cli compile \
+        --fqbn "$BOARD_FQBN" \
+        --output-dir "$COMPILED_SKETCH_DIR" \
+        "$EEPROM_TEST_SKETCH_DIR"
+    
+    if [ $? -eq 0 ]; then
+        log_success "EEPROM test sketch compiled successfully"
+        log_info "Compiled binary: $COMPILED_SKETCH_DIR/eeprom_test.ino.hex"
+    else
+        log_error "EEPROM test sketch compilation failed"
+        exit 1
+    fi
+}
+
 # Detect connected serial ports
 detect_ports() {
     log_info "Detecting connected serial ports..."
@@ -216,21 +282,41 @@ detect_ports() {
     # Find all USB serial devices (common patterns for Feather boards)
     local ports=()
     
-    # Check for common USB serial device patterns
-    for device in /dev/ttyUSB* /dev/ttyACM* /dev/tty.usbmodem* /dev/tty.usbserial*; do
-        if [ -e "$device" ]; then
-            # Check if device is actually a Feather 32u4 by trying to communicate
-            if check_feather_device "$device"; then
-                ports+=("$device")
-                log_info "Found Feather 32u4 at: $device"
+    # Check if running in WSL (usbipd devices)
+    if [ -n "$WSL_DISTRO_NAME" ] || [ -n "$WSLENV" ]; then
+        log_info "Running in WSL - checking for usbipd devices..."
+        # In WSL, usbipd devices typically appear as /dev/ttyUSB* or /dev/ttyACM*
+        for device in /dev/ttyUSB* /dev/ttyACM*; do
+            if [ -e "$device" ]; then
+                # Check if device is actually a Feather 32u4 by trying to communicate
+                if check_feather_device "$device"; then
+                    ports+=("$device")
+                    log_info "Found Feather 32u4 at: $device (WSL usbipd device)"
+                fi
             fi
-        fi
-    done
+        done
+    else
+        # Native Linux - check for all common patterns
+        for device in /dev/ttyUSB* /dev/ttyACM* /dev/tty.usbmodem* /dev/tty.usbserial*; do
+            if [ -e "$device" ]; then
+                # Check if device is actually a Feather 32u4 by trying to communicate
+                if check_feather_device "$device"; then
+                    ports+=("$device")
+                    log_info "Found Feather 32u4 at: $device"
+                fi
+            fi
+        done
+    fi
     
     if [ ${#ports[@]} -eq 0 ]; then
         log_warning "No Feather 32u4 devices detected"
         log_info "Make sure boards are connected and drivers are installed"
-        log_info "Common device paths: /dev/ttyUSB*, /dev/ttyACM*, /dev/tty.usbmodem*"
+        if [ -n "$WSL_DISTRO_NAME" ] || [ -n "$WSLENV" ]; then
+            log_info "WSL detected - make sure devices are bound with usbipd"
+            log_info "Run from Windows: usbipd bind --busid <BUSID>"
+        else
+            log_info "Common device paths: /dev/ttyUSB*, /dev/ttyACM*, /dev/tty.usbmodem*"
+        fi
         return 1
     fi
     
@@ -256,7 +342,6 @@ check_feather_device() {
     
     return 1
 }
-
 
 # Program a single board
 program_board() {
@@ -284,10 +369,6 @@ setup_rtc_board() {
     
     log_info "Setting up RTC on board $board_num on $device..."
     
-    # Get current system time
-    local current_time=$(date '+%Y-%m-%d %H:%M:%S')
-    log_info "Current system time: $current_time"
-    
     # Program the RTC setup sketch
     local rtc_hex_file="$COMPILED_SKETCH_DIR/rtc_setup.ino.hex"
     if ! program_board "$device" "$rtc_hex_file" "$board_num"; then
@@ -298,6 +379,10 @@ setup_rtc_board() {
     # Wait for the board to boot and initialize
     log_info "Waiting for board to initialize..."
     sleep 3
+
+    # Get current system time
+    local current_time=$(date '+%Y-%m-%d %H:%M:%S')
+    log_info "Current system time: $current_time"
     
     # Send time via serial communication
     if ! send_time_via_serial "$device" "$current_time"; then
@@ -357,6 +442,74 @@ except Exception as e:
     return $?
 }
 
+# Read EEPROM serial number via serial and validate it is initialized
+read_and_validate_eeprom_serial() {
+    local device="$1"
+    
+    log_info "Reading EEPROM serial value from $device"
+    
+    python3 -c "
+import serial
+import time
+import sys
+
+PREFIX = 'Read serial number from EEPROM: '
+
+try:
+    ser = serial.Serial('$device', 57600, timeout=10)
+    time.sleep(2)
+    deadline = time.time() + $SERIAL_TIMEOUT
+    eeprom_value = None
+    while time.time() < deadline:
+        if ser.in_waiting > 0:
+            line = ser.readline().decode('utf-8', errors='ignore').strip()
+            print(f'[ARDUINO] {line}')
+            if line.startswith(PREFIX):
+                eeprom_value = line[len(PREFIX):].strip()
+                break
+        time.sleep(0.1)
+    ser.close()
+    if not eeprom_value:
+        print('ERROR: No EEPROM value read')
+        sys.exit(1)
+    # Basic validation: non-empty, at least one alphanumeric character
+    if any(ch.isalnum() for ch in eeprom_value):
+        print(f'SUCCESS: EEPROM value detected: {eeprom_value}')
+        sys.exit(0)
+    print(f'ERROR: EEPROM value appears uninitialized: {eeprom_value!r}')
+    sys.exit(1)
+except Exception as e:
+    print(f'Serial communication error: {e}')
+    sys.exit(1)
+" 2>&1 | tee -a "$LOG_FILE"
+    
+    return $?
+}
+
+# Program EEPROM test sketch and validate EEPROM value on a single board
+test_eeprom_on_board() {
+    local device="$1"
+    local board_num="$2"
+    
+    log_info "Testing EEPROM on board $board_num on $device..."
+    local eeprom_hex_file="$COMPILED_SKETCH_DIR/eeprom_test.ino.hex"
+    if ! program_board "$device" "$eeprom_hex_file" "$board_num"; then
+        log_error "Failed to program EEPROM test sketch on board $board_num"
+        return 1
+    fi
+    
+    # Wait briefly for boot
+    sleep 2
+    
+    if read_and_validate_eeprom_serial "$device"; then
+        log_success "EEPROM appears initialized on board $board_num"
+        return 0
+    else
+        log_error "EEPROM not initialized or unreadable on board $board_num"
+        return 1
+    fi
+}
+
 # Program all detected boards with RTC setup
 program_all_boards() {
     local ports=("$@")
@@ -365,13 +518,20 @@ program_all_boards() {
     local total_count=${#ports[@]}
     
     log_info "Starting two-stage programming for $total_count board(s)..."
-    log_info "Stage 1: RTC setup, Stage 2: Main program"
+    log_info "Stage 0: EEPROM test, Stage 1: RTC setup, Stage 2: Main program"
     
     for i in "${!ports[@]}"; do
         local port="${ports[$i]}"
         local board_num=$((i + 1))
         
         log_info "Processing board $board_num of $total_count on $port"
+
+        # Stage 0: Check EEPROM
+        log_info "Stage 0: Testing EEPROM on board $board_num"
+        if ! test_eeprom_on_board "$port" "$board_num"; then
+            log_warning "Skipping board $board_num due to EEPROM test failure"
+            continue
+        fi
         
         # Stage 1: Setup RTC
         log_info "Stage 1: Setting up RTC on board $board_num"
@@ -426,7 +586,8 @@ main() {
         log_info "Skipping RTC setup - compiling main sketch only"
         compile_sketch
     else
-        log_info "Two-stage programming enabled - compiling both sketches"
+        log_info "Two-stage programming enabled - compiling EEPROM test, RTC setup, and main sketches"
+        compile_eeprom_test_sketch
         compile_rtc_setup_sketch
         compile_sketch
     fi
@@ -508,10 +669,12 @@ show_usage() {
     echo "    └── jorch_featherDIY_customizable.ino"
     echo "  Sketchbooks/Codes_v1/rtc_setup/"
     echo "    └── rtc_setup.ino"
-    echo "  library_config/"
+    echo "  Sketchbooks/eeprom_test/"
+    echo "    └── eeprom_test.ino"
+    echo "  libraries/"
     echo "    └── [library files: .zip, .tar.gz, or library directories]"
     echo ""
-    echo "Required libraries (installed from library_config/):"
+    echo "Required libraries (installed from libraries/):"
     echo "  - RTClib"
     echo "  - TimerOne" 
     echo "  - LowPower"
@@ -522,12 +685,14 @@ show_usage() {
     echo "The script will:"
     echo "  1. Check for required tools (arduino-cli, avrdude, python3)"
     echo "  2. Setup Arduino CLI and install required libraries"
-    echo "  3. Compile the Arduino sketches (RTC setup + main program)"
+    echo "  3. Compile the Arduino sketches (EEPROM test + RTC setup + main program)"
     echo "  4. Detect connected Feather 32u4 boards"
-    echo "  5. Program each board with two-stage process:"
+    echo "  5. Program each board with stages:"
+    echo "     - Stage 0: Flash EEPROM test sketch and verify EEPROM value"
     echo "     - Stage 1: Flash RTC setup program and set current time"
     echo "     - Stage 2: Flash main program"
-    echo "  6. Use --skip-rtc to skip RTC setup and only flash main program"
+    echo "  6. Use --skip-rtc to skip RTC setup and only flash main program (EEPROM test still runs)"
+    echo "CAUTION: This script overwrites the current arduino-cli config settings. Back them up if you want to keep them."
 }
 
 # Parse command line arguments
