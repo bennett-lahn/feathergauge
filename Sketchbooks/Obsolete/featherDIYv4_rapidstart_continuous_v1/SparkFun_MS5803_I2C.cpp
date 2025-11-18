@@ -231,13 +231,12 @@ uint32_t MS5803::getADCconversion(measurement _measurement, precision _precision
 	switch (_precision) {
 	case ADC_256:
 		sensorWait(1);
-
 		break;
 	case ADC_512:
-		sensorWait(2);
+		sensorWait(3);
 		break;
 	case ADC_1024:
-		sensorWait(3);
+		sensorWait(4);
 		break;
 	case ADC_2048:
 		sensorWait(6);
