@@ -3,34 +3,40 @@
 // add interrupt detaches
 
 // ===========================
-// USER-DEFINED FLAGS: 
+// USER DEFINED FLAGS: 
 // Please set the following three flags according to your sensor type and preferred collection type.
+// Type "true" (without quotes) or "false" (without quotes)
 // ===========================
 
 // Set to true for MS5837 (new pressure sensor)
 // Set to false for MS5803 (old pressure sensor)
+// RAPID users should always set this to false
 #define USE_NEW_SENSOR               false
 
 // Set to false for rapid start
 // Set to true for delayed start, using selected start date
+// Untested, DO NOT USE. Set to "false"
 #define DELAY_START                  false
 
 // Set to true for burst sampling
 // Set to false for constant sampling
-#define BURST_SAMPLING               true
+#define BURST_SAMPLING               false
 
-#define BURST_SAMPLING_ONE_SAMPLE    true
+// Set to true if only one sample should be taken at each burst
+// Set to false if samples should be taken according to SAMPLE_FREQ during the
+// write period
+#define BURST_SAMPLING_ONE_SAMPLE    false
 
 // ===========================
 // USER INPUTS:
 // Please set the below variables to reflect your sampling preferences.
 // ===========================
-#define SAMPLE_FREQ                   1        // Sampling frequency in Hz
+#define SAMPLE_FREQ                   1         // Sampling frequency in Hz
 
 // Burst sampling alternates between writing and sleeping according to set periods below
-const uint8_t writeSeconds = 5;    // Number of seconds to sample data in burst sampling
+const uint8_t writeSeconds = 1;    // Number of seconds to sample data in burst sampling
 
-const uint8_t sleepSeconds = 120;   // Number of seconds to sleep in burst sampling. Currently burst sampling only works if sleeping for at least 15 seconds
+const uint8_t sleepSeconds = 10;   // Number of seconds to sleep in burst sampling. Currently burst sampling only works if sleeping for at least 15 seconds
 
 // Edit for DELAY start ONLY
 #if DELAY_START // Date to start sampling
@@ -48,7 +54,9 @@ const uint8_t sleepSeconds = 120;   // Number of seconds to sleep in burst sampl
   const int startMinute = 0;    // DO NOT MODIFY
 #endif
 
-// =========================== USER: DO NOT EDIT BELOW THIS LINE ===========================
+// =========================================================================================
+// ======================= !!! USER: DO NOT EDIT BELOW THIS LINE !!! =======================
+// =========================================================================================
 
 // ===========================
 // LIBRARIES
@@ -117,6 +125,9 @@ class CustomMS5803 : public MS5803 {
 #define ERROR_PAUSE_DELAY             200     // Pause between error blink cycles (ms)
 #define ERROR_BLINK_CYCLE             10      // Total blinks per error cycle
 
+const uint8_t LED_WARMUP_DEFAULT_FLASHES = 6;
+const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS = 100;
+
 // ADC and voltage definitions
 #define MAX_ADC_VALUE                 1024    // Maximum ADC reading (10-bit resolution)
 #define REFERENCE_VOLTAGE             3.3     // ADC reference voltage (V)
@@ -124,14 +135,14 @@ class CustomMS5803 : public MS5803 {
 
 // Buffer and data definitions
 #define BUFFER_SIZE                   36      // Circular buffer size (limited by 32u4 SRAM, only 2560 bytes)
-#define BUFFER_WRITE_COUNT            5       // Buffer and data definitions 32
+#define BUFFER_WRITE_COUNT            32      // Buffer and data definitions 32
 #define FILENAME_LENGTH               13      // Filename length, limited by FAT16 filesystem to 8.3 format (13th char for null terminator)
 #define FRESHWATER_DENSITY            997     // Freshwater density (kg/m³) for pressure calculations
-#define SALTWATER_DENSITY            1025     // Saltwater density (kg/m³) for pressure calculations
+#define SALTWATER_DENSITY             1025    // Saltwater density (kg/m³) for pressure calculations
 
 // Error code definitions
 #define ERROR_SD_CARD_FAILED          1       // Error code for SD card initialization failure
-#define ERROR_FILE_OPEN_FAILED        5       // Error code for file creation failure
+#define ERROR_FILE_OPEN_FAILED        2       // Error code for file creation failure
 
 #define SERIAL_NUMBER_ADDRESS         0       // EEPROM address for device serial number
 
@@ -181,7 +192,17 @@ volatile bool deepSleepFlag  = false;
 volatile bool burstSleepFlag = false;
 volatile bool sleeping       = false;
 
-unsigned long millisAtInterrupt = 0; // Number of milliseconds at last 1 Hz interrupt from RTC
+// Number of milliseconds at last 1 Hz interrupt from RTC
+unsigned long millisAtInterrupt = 0; 
+
+// # of times the LED should be toggled (switched between on/off) during the start-up verification phase
+uint8_t ledWarmupToggleTarget = 0;
+
+// Current # of times the LED has been toggled
+uint8_t ledWarmupToggleCount  = 0;
+
+// True if LED should be toggled only once (blocking for LED_WARMUP_MANUAL_FLASH_DELAY_MS) during start-up
+bool ledWarmupManualPulsePending = false;
 
 // ===========================
 // SETUP - SENSOR, TIMESTAMP, SD CARD
@@ -191,14 +212,16 @@ void setup() {
   power_timer3_disable();
   power_timer4_disable();
   pinMode(LED_PIN, OUTPUT); // Activates the red LED on pin 13
+  configureLedWarmupIndicator();
   pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
-  Serial.begin(SERIAL_BAUD_RATE);
-  while (!Serial); 
+  Serial.end();
+  // Serial.begin(SERIAL_BAUD_RATE);  // Commented out to prevent blocking when USB disconnected
+  // while (!Serial);  // Removed to prevent blocking when USB disconnected 
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
   
   if (!rtc.begin()) {
-    Serial.println(F("RTC Failed to initialize"));
+    if (Serial) Serial.println(F("RTC Failed to initialize"));
     error(2);
     return;
   }
@@ -215,18 +238,20 @@ void setup() {
         // If the DS3231 has had continous MCU/battery power since last program flash, the time will not be changed
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
         DateTime setTime = rtc.now();
-        Serial.print(F("RTC time set to: "));
-        Serial.print(setTime.year());
-        Serial.print('/');
-        Serial.print(setTime.month());
-        Serial.print('/');
-        Serial.print(setTime.day());
-        Serial.print(' ');
-        Serial.print(setTime.hour());
-        Serial.print(':');
-        Serial.print(setTime.minute());
-        Serial.print(':');
-        Serial.println(setTime.second());
+        if (Serial) {
+          Serial.print(F("RTC time set to: "));
+          Serial.print(setTime.year());
+          Serial.print('/');
+          Serial.print(setTime.month());
+          Serial.print('/');
+          Serial.print(setTime.day());
+          Serial.print(' ');
+          Serial.print(setTime.hour());
+          Serial.print(':');
+          Serial.print(setTime.minute());
+          Serial.print(':');
+          Serial.println(setTime.second());
+        }
   }
 
   currentSecond = rtc.now();
@@ -235,7 +260,7 @@ void setup() {
   
   #if USE_NEW_SENSOR
     if (!newSensor.init()) {
-      Serial.println("New pressure sensor failed to initialize");
+      if (Serial) Serial.println("New pressure sensor failed to initialize");
       error(3);
       return;
     }
@@ -246,10 +271,10 @@ void setup() {
     oldSensor.begin();
   #endif
 
-    Serial.print(F("Initializing SD card..."));
+    if (Serial) Serial.print(F("Initializing SD card..."));
   
   if (!SD.begin(SD_CARD_SELECT_PIN)) { 
-    Serial.println(F("Card Failed or Not Present"));
+    if (Serial) Serial.println(F("Card Failed or Not Present"));
     error(ERROR_SD_CARD_FAILED);
     return;
   }
@@ -258,7 +283,7 @@ void setup() {
     dataBuffer[i].valid = false;
   }
 
-  Serial.println(F("Card Initialized."));
+  if (Serial) Serial.println(F("Card Initialized."));
   char fileName[FILENAME_LENGTH];
   makeFileName(fileName);
   
@@ -266,7 +291,7 @@ void setup() {
   outputFile = SD.open(fileName, FILE_WRITE); // Opens .csv file
 
   if (outputFile) {
-    Serial.println(F("File opened"));
+    if (Serial) Serial.println(F("File opened"));
     char serialNumber[16];
     EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
     outputFile.print(F("W.G. Num: "));
@@ -276,7 +301,7 @@ void setup() {
     outputFile.println();
     outputFile.flush();
   } else {
-    Serial.println(F("error opening datalog-case1"));
+    if (Serial) Serial.println(F("error opening datalog-case1"));
     error(ERROR_FILE_OPEN_FAILED);
   }
 
@@ -297,12 +322,14 @@ void setup() {
     // Serial.println(F("READY!"));
     #if BURST_SAMPLING
       timeAtBurstSwitch = rtc.now();
-      Serial.print(F("[BURST] Start write window at "));
-      Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
-      Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
-      Serial.println(timeAtBurstSwitch.second());
-      Serial.print(F("[BURST] writeSeconds=")); Serial.print(writeSeconds);
-      Serial.print(F(", sleepSeconds=")); Serial.println(sleepSeconds);
+      if (Serial) {
+        Serial.print(F("[BURST] Start write window at "));
+        Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
+        Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
+        Serial.println(timeAtBurstSwitch.second());
+        Serial.print(F("[BURST] writeSeconds=")); Serial.print(writeSeconds);
+        Serial.print(F(", sleepSeconds=")); Serial.println(sleepSeconds);
+      }
     #endif
   #endif
 }
@@ -313,9 +340,9 @@ void setup() {
 
 void loop() {
     if (deepSleepFlag) {
-      digitalWrite(LED_PIN, HIGH);
+      // digitalWrite(LED_PIN, HIGH);
       // delay(3000);
-      digitalWrite(LED_PIN, LOW);
+      // digitalWrite(LED_PIN, LOW);
       deepSleepLog();
     }
     #if BURST_SAMPLING
@@ -327,15 +354,17 @@ void loop() {
           attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
         #endif
         resetTimer();
-        Serial.print(F("[BURST] Wake -> start write window at "));
-        Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
-        Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
-        Serial.println(timeAtBurstSwitch.second());
+        if (Serial) {
+          Serial.print(F("[BURST] Wake -> start write window at "));
+          Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
+          Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
+          Serial.println(timeAtBurstSwitch.second());
+        }
         burstSleepFlag = false;
       } else if (elapsed.totalseconds() > writeSeconds || BURST_SAMPLING_ONE_SAMPLE) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(1);
-        digitalWrite(LED_PIN, LOW);
+        // digitalWrite(LED_PIN, HIGH);
+        // delay(1);
+        // digitalWrite(LED_PIN, LOW);
         #if BURST_SAMPLING_ONE_SAMPLE
           performSensorReading();
         #endif
@@ -345,12 +374,14 @@ void loop() {
           writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, data.batteryVoltage);
         }
         outputFile.flush();
-        Serial.print(F("[BURST] End write window at "));
-        Serial.print(endTime.hour()); Serial.print(':');
-        Serial.print(endTime.minute()); Serial.print(':');
-        Serial.println(endTime.second());
-        Serial.print("Elapsed time: ");
-        Serial.println(elapsed.totalseconds());
+        if (Serial) {
+          Serial.print(F("[BURST] End write window at "));
+          Serial.print(endTime.hour()); Serial.print(':');
+          Serial.print(endTime.minute()); Serial.print(':');
+          Serial.println(endTime.second());
+          Serial.print("Elapsed time: ");
+          Serial.println(elapsed.totalseconds());
+        }
         enterBurstDeepSleep(endTime);
       }
     #endif
@@ -382,13 +413,17 @@ void loop() {
           samplingFlag = false;
         }
       }
-      Serial.print(F("Starting write at time: "));
-      Serial.println(millis());
+      if (Serial) {
+        Serial.print(F("Starting write at time: "));
+        Serial.println(millis());
+      }
       outputFile.flush();
-      Serial.print(F("Wrote "));
-      Serial.print(writeCount);
-      Serial.print(F(" data points to SD card at time "));
-      Serial.println(millis());
+      if (Serial) {
+        Serial.print(F("Wrote "));
+        Serial.print(writeCount);
+        Serial.print(F(" data points to SD card at time "));
+        Serial.println(millis());
+      }
     }
     // Finished writing to SD card, sleep until next sampling time or interrupt from timers/RTC
     // When waking from burst sleep, this idle command mean the MCU will sleep until the next ms, then check the flag
@@ -406,6 +441,7 @@ void loop() {
  * Usage: Called when `samplingFlag` is set or in one-sample burst mode.
  */
 void performSensorReading() {
+    float currentTemperature, currentPressure;
     #if USE_NEW_SENSOR
       newSensor.read();
       currentTemperature = newSensor.temperature();
@@ -413,6 +449,8 @@ void performSensorReading() {
     #else
       oldSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_512, &currentPressure, &currentTemperature);
     #endif
+
+  updateLedWarmupIndicator();
 
     // Compute timestamp relative to last RTC tick without mutating global currentSecond
     uint16_t millisec = millis() - millisAtInterrupt;
@@ -453,18 +491,20 @@ void resetTimer() {
   power_adc_enable();
   millisAtInterrupt = millis();
   currentSecond = rtc.now();
-  Serial.print(F("Reset timer at: "));
-  Serial.print(currentSecond.year());
-  Serial.print('/');
-  Serial.print(currentSecond.month());
-  Serial.print('/');
-  Serial.print(currentSecond.day());
-  Serial.print(' ');
-  Serial.print(currentSecond.hour());
-  Serial.print(':');
-  Serial.print(currentSecond.minute());
-  Serial.print(':');
-  Serial.println(currentSecond.second());
+  if (Serial) {
+    Serial.print(F("Reset timer at: "));
+    Serial.print(currentSecond.year());
+    Serial.print('/');
+    Serial.print(currentSecond.month());
+    Serial.print('/');
+    Serial.print(currentSecond.day());
+    Serial.print(' ');
+    Serial.print(currentSecond.hour());
+    Serial.print(':');
+    Serial.print(currentSecond.minute());
+    Serial.print(':');
+    Serial.println(currentSecond.second());
+  }
   #if BURST_SAMPLING
     elapsed = currentSecond - timeAtBurstSwitch;
   #endif
@@ -511,8 +551,10 @@ void makeFileName(char* fileName) {
     fileName[7] = '0' + (fileIndex % 10);
   }
   
-  Serial.print(F("File name: "));
-  Serial.println(fileName);
+  if (Serial) {
+    Serial.print(F("File name: "));
+    Serial.println(fileName);
+  }
 }
 
 /**
@@ -596,7 +638,6 @@ void addToBuffer(DateTime now, int millisec, float pressure, float temperature, 
   } else {
     bufferCount++;
   }
-  
   dataBuffer[bufferHead].now = now;
   dataBuffer[bufferHead].millisec = millisec;
   dataBuffer[bufferHead].pressure = pressure;
@@ -700,7 +741,7 @@ void enterDelayDeepSleep() {
   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
   rtc.setAlarm1(startDateTime, DS3231_A1_Date); // Alarm 1 triggers at the start time
   rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every day, taking a sample to track when/if battery dies
-  Serial.println(F("Entering delay deep sleep"));
+  if (Serial) Serial.println(F("Entering delay deep sleep"));
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
   // digitalWrite(LED_PIN, HIGH);
   // delay(1000);
@@ -732,21 +773,21 @@ void enterBurstDeepSleep(DateTime endTime) {
     return;
   }
   DateTime nextWake(endTime + TimeSpan(sleepSeconds));
-  Serial.print(F("[BURST] Next wake scheduled at "));
-  Serial.print(nextWake.hour()); Serial.print(':');
-  Serial.print(nextWake.minute()); Serial.print(':');
-  Serial.println(nextWake.second());
+  if (Serial) {
+    Serial.print(F("[BURST] Next wake scheduled at "));
+    Serial.print(nextWake.hour()); Serial.print(':');
+    Serial.print(nextWake.minute()); Serial.print(':');
+    Serial.println(nextWake.second());
+  }
   rtc.clearAlarm(1);
   rtc.setAlarm1(nextWake, DS3231_A1_Date);
   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), burstSleepInterrupt, FALLING);
 
-  // LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART1_OFF, TWI_OFF, USB_OFF);
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-  delay(50);  // This delay is important to allow MCU components to stabilize
+  delay(50);  // This delay is important to allow MCU components to initialize upon wake-up
   Wire.end();
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
-  Serial.begin(SERIAL_BAUD_RATE);
   rtc.clearAlarm(1);
   timeAtBurstSwitch = rtc.now();
   resetTimer();
@@ -756,6 +797,7 @@ void enterBurstDeepSleep(DateTime endTime) {
     Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
   #endif
 }
+
 /**
  * setForeverIdleSleep
  * Purpose: Enter idle sleep indefinitely while keeping timers 0/1 running for millis tracking and sampling cadence.
@@ -764,14 +806,14 @@ void enterBurstDeepSleep(DateTime endTime) {
  */
 void setForeverIdleSleep() {
   // TODO: See if turning on SPI/TWI improves data loss
-  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't accidentally turn them back on, they are already off
+  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer sleep, they are already off
   LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
 }
 
 // ===========================
 // ERRORS/TROUBLESHOOTING
 // ===========================
-// Triggers the LED on pin 13 to blink a certain number of times during unrecoverable errors
+
 /**
  * error
  * Purpose: Indicate unrecoverable error by blinking LED a number of times equal to `errno`, repeated forever.
@@ -791,6 +833,75 @@ void error (uint8_t errno) {
     for (blinkCount = errno; blinkCount < ERROR_BLINK_CYCLE; blinkCount++) {
       delay(ERROR_PAUSE_DELAY);
     }
+  }
+}
+
+/**
+ * configureLedWarmupIndicator
+ * Purpose: Set the correct number of flashes at start-up for the current configuration, used to verify
+ *          that the wave gauge is working correctly without serial port access.
+ * Inputs: None, configures global variables ledWarmupToggleCount, ledWarmupToggleTarget, ledWarmupManualPulsePending
+ * Usage: Run once within setup()
+ */
+void configureLedWarmupIndicator() {
+  ledWarmupToggleCount = 0;
+  ledWarmupToggleTarget = 0;
+  ledWarmupManualPulsePending = false;
+
+#if BURST_SAMPLING_ONE_SAMPLE
+  ledWarmupManualPulsePending = true;
+#else
+  uint8_t flashCount = LED_WARMUP_DEFAULT_FLASHES;
+  bool useManualPulse = false;
+  #if BURST_SAMPLING
+    uint32_t availableReadings = (uint32_t)writeSeconds * (uint32_t)SAMPLE_FREQ;
+    // Calculate # of flashes that fit within first sampling window
+    while (flashCount > 1 && ((uint32_t)flashCount * 2) > availableReadings) {
+      flashCount /= 2;
+      if (flashCount == 0) {
+        flashCount = 1;
+        break;
+      }
+    }
+    if (((uint32_t)flashCount * 2) > availableReadings) {
+      useManualPulse = true;
+    }
+  #endif
+  if (useManualPulse) {
+    ledWarmupManualPulsePending = true;
+  } else {
+    ledWarmupToggleTarget = flashCount * 2;
+  }
+#endif
+
+  digitalWrite(LED_PIN, LOW);
+}
+
+/**
+ * updateLedWarmupIndicator
+ * Purpose: Toggle LED_PIN at program start for a set number of sensor readings
+ * Inputs: None, uses global variables ledWarmupToggleCount, ledWarmupToggleTarget, ledWarmupManualPulsePending
+ * Usage: Run within performSensorReadings() if LED diagnostics are desired
+ */
+void updateLedWarmupIndicator() {
+  if (ledWarmupManualPulsePending) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(LED_WARMUP_MANUAL_FLASH_DELAY_MS);
+    digitalWrite(LED_PIN, LOW);
+    ledWarmupManualPulsePending = false;
+    return;
+  }
+
+  if (ledWarmupToggleCount >= ledWarmupToggleTarget) {
+    return;
+  }
+
+  bool ledShouldBeOn = (ledWarmupToggleCount % 2 == 0);
+  digitalWrite(LED_PIN, ledShouldBeOn ? HIGH : LOW);
+  ledWarmupToggleCount++;
+
+  if (ledWarmupToggleCount >= ledWarmupToggleTarget) {
+    digitalWrite(LED_PIN, LOW);
   }
 }
 
