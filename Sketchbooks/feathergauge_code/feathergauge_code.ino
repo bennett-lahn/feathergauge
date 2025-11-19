@@ -31,12 +31,12 @@
 // USER INPUTS:
 // Please set the below variables to reflect your sampling preferences.
 // ===========================
-#define SAMPLE_FREQ                   4         // Sampling frequency in Hz
+#define SAMPLE_FREQ                   1         // Sampling frequency in Hz
 
 // Burst sampling alternates between writing and sleeping according to set periods below
-const uint8_t writeSeconds = 5;    // Number of seconds to sample data in burst sampling
+const uint8_t writeSeconds = 1;    // Number of seconds to sample data in burst sampling
 
-const uint8_t sleepSeconds = 120;   // Number of seconds to sleep in burst sampling. Currently burst sampling only works if sleeping for at least 15 seconds
+const uint8_t sleepSeconds = 10;   // Number of seconds to sleep in burst sampling. Currently burst sampling only works if sleeping for at least 15 seconds
 
 // Edit for DELAY start ONLY
 #if DELAY_START // Date to start sampling
@@ -125,8 +125,8 @@ class CustomMS5803 : public MS5803 {
 #define ERROR_PAUSE_DELAY             200     // Pause between error blink cycles (ms)
 #define ERROR_BLINK_CYCLE             10      // Total blinks per error cycle
 
-const uint8_t LED_WARMUP_DEFAULT_FLASHES = 5;
-const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS = 500;
+const uint8_t LED_WARMUP_DEFAULT_FLASHES = 6;
+const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS = 100;
 
 // ADC and voltage definitions
 #define MAX_ADC_VALUE                 1024    // Maximum ADC reading (10-bit resolution)
@@ -135,14 +135,14 @@ const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS = 500;
 
 // Buffer and data definitions
 #define BUFFER_SIZE                   36      // Circular buffer size (limited by 32u4 SRAM, only 2560 bytes)
-#define BUFFER_WRITE_COUNT            32       // Buffer and data definitions 32
+#define BUFFER_WRITE_COUNT            32      // Buffer and data definitions 32
 #define FILENAME_LENGTH               13      // Filename length, limited by FAT16 filesystem to 8.3 format (13th char for null terminator)
 #define FRESHWATER_DENSITY            997     // Freshwater density (kg/m³) for pressure calculations
-#define SALTWATER_DENSITY            1025     // Saltwater density (kg/m³) for pressure calculations
+#define SALTWATER_DENSITY             1025    // Saltwater density (kg/m³) for pressure calculations
 
 // Error code definitions
 #define ERROR_SD_CARD_FAILED          1       // Error code for SD card initialization failure
-#define ERROR_FILE_OPEN_FAILED        5       // Error code for file creation failure
+#define ERROR_FILE_OPEN_FAILED        2       // Error code for file creation failure
 
 #define SERIAL_NUMBER_ADDRESS         0       // EEPROM address for device serial number
 
@@ -192,7 +192,8 @@ volatile bool deepSleepFlag  = false;
 volatile bool burstSleepFlag = false;
 volatile bool sleeping       = false;
 
-unsigned long millisAtInterrupt = 0; // Number of milliseconds at last 1 Hz interrupt from RTC
+// Number of milliseconds at last 1 Hz interrupt from RTC
+unsigned long millisAtInterrupt = 0; 
 
 // # of times the LED should be toggled (switched between on/off) during the start-up verification phase
 uint8_t ledWarmupToggleTarget = 0;
@@ -213,6 +214,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT); // Activates the red LED on pin 13
   configureLedWarmupIndicator();
   pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
+  Serial.end();
   // Serial.begin(SERIAL_BAUD_RATE);  // Commented out to prevent blocking when USB disconnected
   // while (!Serial);  // Removed to prevent blocking when USB disconnected 
   Wire.begin();
@@ -338,9 +340,9 @@ void setup() {
 
 void loop() {
     if (deepSleepFlag) {
-      digitalWrite(LED_PIN, HIGH);
+      // digitalWrite(LED_PIN, HIGH);
       // delay(3000);
-      digitalWrite(LED_PIN, LOW);
+      // digitalWrite(LED_PIN, LOW);
       deepSleepLog();
     }
     #if BURST_SAMPLING
@@ -360,9 +362,9 @@ void loop() {
         }
         burstSleepFlag = false;
       } else if (elapsed.totalseconds() > writeSeconds || BURST_SAMPLING_ONE_SAMPLE) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(1);
-        digitalWrite(LED_PIN, LOW);
+        // digitalWrite(LED_PIN, HIGH);
+        // delay(1);
+        // digitalWrite(LED_PIN, LOW);
         #if BURST_SAMPLING_ONE_SAMPLE
           performSensorReading();
         #endif
@@ -781,9 +783,8 @@ void enterBurstDeepSleep(DateTime endTime) {
   rtc.setAlarm1(nextWake, DS3231_A1_Date);
   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), burstSleepInterrupt, FALLING);
 
-  // LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART1_OFF, TWI_OFF, USB_OFF);
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-  delay(50);  // This delay is important to allow MCU components to stabilize
+  delay(50);  // This delay is important to allow MCU components to initialize upon wake-up
   Wire.end();
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
@@ -796,6 +797,7 @@ void enterBurstDeepSleep(DateTime endTime) {
     Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
   #endif
 }
+
 /**
  * setForeverIdleSleep
  * Purpose: Enter idle sleep indefinitely while keeping timers 0/1 running for millis tracking and sampling cadence.
@@ -804,7 +806,7 @@ void enterBurstDeepSleep(DateTime endTime) {
  */
 void setForeverIdleSleep() {
   // TODO: See if turning on SPI/TWI improves data loss
-  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't accidentally turn them back on, they are already off
+  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer sleep, they are already off
   LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
 }
 
