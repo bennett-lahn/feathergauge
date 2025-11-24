@@ -1,7 +1,3 @@
-// Must define a malloc failed hook function
-// restart peripherals???
-// add interrupt detaches
-
 // ===========================
 // USER DEFINED FLAGS: 
 // Please set the following three flags according to your sensor type and preferred collection type.
@@ -31,20 +27,20 @@
 // USER INPUTS:
 // Please set the below variables to reflect your sampling preferences.
 // ===========================
-#define SAMPLE_FREQ                   1         // Sampling frequency in Hz
+constexpr uint8_t SAMPLE_FREQ = 16;   // Sampling frequency in Hz
 
 // Burst sampling alternates between writing and sleeping according to set periods below
-const uint8_t writeSeconds = 1;    // Number of seconds to sample data in burst sampling
+constexpr uint8_t writeSeconds = 1;   // Number of seconds to sample data in burst sampling
 
-const uint8_t sleepSeconds = 10;   // Number of seconds to sleep in burst sampling. Currently burst sampling only works if sleeping for at least 15 seconds
+constexpr uint8_t sleepSeconds = 10;  // Number of seconds to sleep in burst sampling
 
 // Edit for DELAY start ONLY
 #if DELAY_START // Date to start sampling
   const int startYear   = 2025; // Year to start sampling
-  const int startMonth  = 9;    // Month to start sampling
-  const int startDay    = 17;   // Day to start sampling
-  const int startHour   = 13;   // Hour to start sampling (24-hr format)
-  const int startMinute = 00;   // Minute to start sampling
+  const int startMonth  = 11;    // Month to start sampling
+  const int startDay    = 19;   // Day to start sampling
+  const int startHour   = 10;   // Hour to start sampling (24-hr format)
+  const int startMinute = 0;   // Minute to start sampling
   bool hasStarted = false;
 #else // Early dummy date to satisfy later conditional check
   const int startYear   = 2000; // DO NOT MODIFY
@@ -62,11 +58,14 @@ const uint8_t sleepSeconds = 10;   // Number of seconds to sleep in burst sampli
 // LIBRARIES
 // =========================== 
 
-#include <Wire.h> // Arduino library
-#include <SPI.h> // Arduino library
-#include <SD.h> // Arduino library
-#include <EEPROM.h> // Arduino library (?)
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <EEPROM.h>
 #include <avr/power.h>
+#include <RTClib.h>
+#include <TimerOne.h>
+#include <LowPower.h>
 
 #if USE_NEW_SENSOR
   #include "MS5837.h"
@@ -77,10 +76,6 @@ const uint8_t sleepSeconds = 10;   // Number of seconds to sleep in burst sampli
 // A note on using the SparkFun library:
 // A very minor change to the SparkFun library is needed for this code to work. The sensorWait function in SparkFun_MS5803_I2C.h must be declared as virtual.
 // This change is used to override sensorWait for better power management.
-
-#include "RTClib.h"
-#include "TimerOne.h"
-#include "LowPower.h"
 
 // Create custom MS5803 class to override sensorWait function for better power management
 class CustomMS5803 : public MS5803 {
@@ -95,7 +90,7 @@ class CustomMS5803 : public MS5803 {
 
 // Timer 4 PRR bit is currently not defined in iom32u4.h
 #ifndef PRTIM4
-  #define PRTIM4                       4       // Power Reduction Register bit for Timer 4
+  #define PRTIM4 4  // Power Reduction Register bit for Timer 4
 #endif
 
 // Timer 4 power reduction macro is not defined currently in power.h
@@ -108,43 +103,43 @@ class CustomMS5803 : public MS5803 {
 #endif
 
 // ===========================
-// MAGIC NUMBER DEFINITIONS
+// CONSTANT DEFINITIONS
 // ===========================
+
 // Pin definitions
-#define LED_PIN                       13      // Built-in LED pin for status indication
-#define RTC_INTERRUPT_PIN             1       // RTC alarm interrupt pin (DS3231 SQW)
-#define SD_CARD_SELECT_PIN            4       // SPI chip select pin for SD card
-#define BATTERY_VOLTAGE_PIN           A9      // Analog pin for battery voltage measurement
-
+constexpr uint8_t LED_PIN                        = 13;        // Built-in LED pin for status indication
+constexpr uint8_t RTC_INTERRUPT_PIN              = 1;         // RTC alarm interrupt pin (DS3231 SQW)
+constexpr uint8_t SD_CARD_SELECT_PIN             = 4;         // SPI chip select pin for SD card
+#define BATTERY_VOLTAGE_PIN           A9      // Analog pin for battery voltage measurement TODO: Currently not sure what type this is, so didn't convert to constexpr
 // Timing and frequency definitions
-#define MICROSECONDS_PER_SECOND       1000000 // Conversion factor for time calculations
-#define SAMPLE_TIME                   (1.0f / SAMPLE_FREQ)*MICROSECONDS_PER_SECOND  // Timer1 period in microseconds
-#define TWI_CLOCK_SPEED               400000  // I2C communication speed (400kHz)
-#define SERIAL_BAUD_RATE              57600   // Serial communication speed for debugging
-#define ERROR_BLINK_DELAY             100     // LED on/off time during error indication (ms)
-#define ERROR_PAUSE_DELAY             200     // Pause between error blink cycles (ms)
-#define ERROR_BLINK_CYCLE             10      // Total blinks per error cycle
+constexpr unsigned long MICROSECONDS_PER_SECOND  = 1000000UL; // Conversion factor for time calculations
+constexpr float SAMPLE_TIME                      = (1.0f / SAMPLE_FREQ) * MICROSECONDS_PER_SECOND;  // Timer1 period in microseconds
+constexpr unsigned long TWI_CLOCK_SPEED          = 400000UL;  // I2C communication speed (400kHz)
+constexpr unsigned long SERIAL_BAUD_RATE         = 57600UL;   // Serial communication speed for debugging
+constexpr uint8_t ERROR_BLINK_DELAY              = 100;       // LED on/off time during error indication (ms)
+constexpr uint8_t ERROR_PAUSE_DELAY              = 200;       // Pause between error blink cycles (ms)
+constexpr uint8_t ERROR_BLINK_CYCLE              = 10;        // Total blinks per error cycle
 
-const uint8_t LED_WARMUP_DEFAULT_FLASHES = 6;
-const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS = 100;
+const uint8_t LED_WARMUP_DEFAULT_FLASHES         = 6;
+const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS  = 100;
 
 // ADC and voltage definitions
-#define MAX_ADC_VALUE                 1024    // Maximum ADC reading (10-bit resolution)
-#define REFERENCE_VOLTAGE             3.3     // ADC reference voltage (V)
-#define BATTERY_VOLTAGE_MULTIPLIER    2       // Voltage divider compensation factor
+constexpr uint16_t MAX_ADC_VALUE                 = 1024;      // Maximum ADC reading (10-bit resolution)
+constexpr float REFERENCE_VOLTAGE                = 3.3f;      // ADC reference voltage (V)
+constexpr uint8_t BATTERY_VOLTAGE_MULTIPLIER     = 2;         // Voltage divider compensation factor
 
 // Buffer and data definitions
-#define BUFFER_SIZE                   36      // Circular buffer size (limited by 32u4 SRAM, only 2560 bytes)
-#define BUFFER_WRITE_COUNT            32      // Buffer and data definitions 32
-#define FILENAME_LENGTH               13      // Filename length, limited by FAT16 filesystem to 8.3 format (13th char for null terminator)
-#define FRESHWATER_DENSITY            997     // Freshwater density (kg/m³) for pressure calculations
-#define SALTWATER_DENSITY             1025    // Saltwater density (kg/m³) for pressure calculations
+constexpr uint8_t BUFFER_SIZE                    = 36;        // Circular buffer size (limited by 32u4 SRAM, only 2560 bytes)
+constexpr uint8_t BUFFER_WRITE_COUNT             = 32;        // Buffer and data definitions 32
+constexpr uint8_t FILENAME_LENGTH                = 13;        // Filename length, limited by FAT16 filesystem to 8.3 format (13th char for null terminator)
+constexpr uint16_t FRESHWATER_DENSITY            = 997;       // Freshwater density (kg/m³) for pressure calculations
+constexpr uint16_t SALTWATER_DENSITY             = 1025;      // Saltwater density (kg/m³) for pressure calculations
 
 // Error code definitions
-#define ERROR_SD_CARD_FAILED          1       // Error code for SD card initialization failure
-#define ERROR_FILE_OPEN_FAILED        2       // Error code for file creation failure
+constexpr uint8_t ERROR_SD_CARD_FAILED           = 1;         // Error code for SD card initialization failure
+constexpr uint8_t ERROR_FILE_OPEN_FAILED         = 2;         // Error code for file creation failure
 
-#define SERIAL_NUMBER_ADDRESS         0       // EEPROM address for device serial number
+constexpr uint8_t SERIAL_NUMBER_ADDRESS          = 0;         // EEPROM address for device serial number
 
 // ===========================
 // DATA STRUCTURE FOR CIRCULAR BUFFER
@@ -159,7 +154,7 @@ struct DataPoint {
 };
 
 // ===========================
-// INITIALIZING GLOBAL VARIABLES
+// GLOBAL VARIABLE INITIALIZATION
 // ===========================
 #if USE_NEW_SENSOR
   MS5837 newSensor;
@@ -172,7 +167,7 @@ struct DataPoint {
 #endif
 
 RTC_DS3231 rtc;
-File outputFile;           // Used to open, write to, and close files on the SD card
+File outputFile;            // Used to open, write to, and close files on the SD card
 
 // Circular buffer variables
 DataPoint dataBuffer[BUFFER_SIZE];
@@ -205,20 +200,195 @@ uint8_t ledWarmupToggleCount  = 0;
 bool ledWarmupManualPulsePending = false;
 
 // ===========================
+// FUNCTION DECLARATIONS
+// ===========================
+
+/**
+ * performSensorReading
+ * Purpose: Read pressure and temperature from the active sensor and enqueue a data point with timestamp and battery voltage.
+ * Inputs:
+ *   - None (uses globals: currentSecond, millisAtInterrupt, currentVoltage, currentPressure, currentTemperature)
+ * Usage: Called when `samplingFlag` is set or in one-sample burst mode.
+ */
+void performSensorReading();
+
+/**
+ * getBatteryVoltage
+ * Purpose: Measure battery voltage via ADC on `BATTERY_VOLTAGE_PIN` using divider ratio.
+ * Inputs: None
+ * Returns: float — battery voltage in volts.
+ * Usage: Call once per second or as needed; ADC MUST enabled/disabled by caller.
+ */
+float getBatteryVoltage();
+
+/**
+ * resetTimer
+ * Purpose: Synchronize timer-driven sampling to the RTC second tick; updates timekeeping and schedules next RTC alarm.
+ * Inputs: None
+ * Usage: Call after every RTC interrupt or when starting new sampling windows.
+ */
+void resetTimer();
+
+/**
+ * makeFileName
+ * Purpose: Generate a daily-rotating CSV filename in the form MM-DD-XX.csv where XX increments from 00..99.
+ * Inputs:
+ *   - fileName: char* (out) — caller-provided buffer of length FILENAME_LENGTH.
+ * Usage: Call once during setup before opening the SD file.
+ */
+void makeFileName(char* fileName);
+
+/**
+ * setTimeStamp
+ * Purpose: Provide FAT filesystem date/time for file creation/modification via SD library callback.
+ * Inputs:
+ *   - date: uint16_t* (out) — FAT date packed with year, month, day.
+ *   - time: uint16_t* (out) — FAT time packed with hour, minute, second.
+ * Usage: Registered as SdFile::dateTimeCallback handler.
+ */
+void setTimeStamp(uint16_t* date, uint16_t* time);
+
+/**
+ * writeToOutputFile
+ * Purpose: Append a CSV line to the open SD file with timestamp, pressure, temperature, and battery voltage.
+ * Inputs:
+ *   - now: DateTime — timestamp (date and time to seconds).
+ *   - millisec: int — millisecond offset within the second (0..999).
+ *   - pressure: float — pressure in mbar.
+ *   - temperature: float — temperature in °C.
+ *   - batteryVoltage: float — battery voltage in V.
+ * Usage: Call repeatedly to serialize buffered samples.
+ */
+void writeToOutputFile(DateTime now, int millisec, float pressure, float temperature, float batteryVoltage);
+
+/**
+ * addToBuffer
+ * Purpose: Push a data point into the circular buffer; overwrites oldest when full.
+ * Inputs:
+ *   - now: DateTime — timestamp for the sample (second resolution).
+ *   - millisec: int — millisecond offset within the current second (0..999).
+ *   - pressure: float — pressure reading in mbar.
+ *   - temperature: float — temperature reading in °C.
+ *   - batteryVoltage: float — battery voltage in V.
+ * Usage: Call immediately after each sensor read to store data between SD writes.
+ */
+void addToBuffer(DateTime now, int millisec, float pressure, float temperature, float batteryVoltage);
+
+/**
+ * readFromBuffer
+ * Purpose: Pop the oldest valid data point from the circular buffer.
+ * Inputs:
+ *   - data: DataPoint* (out) — caller-allocated struct to receive data.
+ * Returns: bool — true if a valid data point was returned; false if buffer empty.
+ * Usage: Use to remove and return the oldest data point from the buffer.
+ */
+bool readFromBuffer(DataPoint* data);
+
+/**
+ * deepSleepLog
+ * Purpose: Handle wake events during delayed start: if start time reached, initialize sampling; otherwise log a sample and return to deep sleep.
+ * Inputs: None
+ * Usage: Called from loop when `deepSleepFlag` is set by RTC interrupt during DELAY_START.
+ */
+void deepSleepLog();
+
+/**
+ * enterDelayDeepSleep
+ * Purpose: Configure RTC alarms for the target start date/time and enter deep sleep until then.
+ * Inputs: None
+ * Usage: Used when DELAY_START is enabled.
+ */
+void enterDelayDeepSleep();
+
+/**
+ * enterBurstDeepSleep
+ * Purpose: Schedule next wake time after a burst write window and enter deep sleep until then.
+ * Inputs:
+ *   - endTime: DateTime — timestamp when the last write window ended.
+ * Usage: Used only when BURST_SAMPLING is enabled.
+ */
+void enterBurstDeepSleep(DateTime endTime);
+
+/**
+ * setForeverIdleSleep
+ * Purpose: Enter idle sleep indefinitely while keeping timers 0/1 running for millis tracking and sampling cadence.
+ * Inputs: None
+ * Usage: Use at end of loop to minimize power between events while preserving timer state.
+ */
+void setForeverIdleSleep();
+
+/**
+ * error
+ * Purpose: Indicate unrecoverable error by blinking LED a number of times equal to `errno`, repeated forever.
+ * Inputs:
+ *   - errno: uint8_t — error code and blink count.
+ * Usage: Call on fatal conditions; function does not return.
+ */
+void error(uint8_t errno);
+
+/**
+ * configureLedWarmupIndicator
+ * Purpose: Set the correct number of flashes at start-up for the current configuration, used to verify
+ *          that the wave gauge is working correctly without serial port access.
+ * Inputs: None, configures global variables ledWarmupToggleCount, ledWarmupToggleTarget, ledWarmupManualPulsePending
+ * Usage: Run once within setup()
+ */
+void configureLedWarmupIndicator();
+
+/**
+ * updateLedWarmupIndicator
+ * Purpose: Toggle LED_PIN at program start for a set number of sensor readings
+ * Inputs: None, uses global variables ledWarmupToggleCount, ledWarmupToggleTarget, ledWarmupManualPulsePending
+ * Usage: Run within performSensorReadings() if LED diagnostics are desired
+ */
+void updateLedWarmupIndicator();
+
+/**
+ * triggerSampling (ISR context)
+ * Purpose: Flag main loop to perform a sensor read (Timer1 compare interrupt).
+ * Inputs: None
+ */
+void triggerSampling();
+
+/**
+ * resetTimerInterrupt (ISR context)
+ * Purpose: Flag main loop to resynchronize timers on each RTC second tick.
+ * Inputs: None
+ */
+void resetTimerInterrupt();
+
+/**
+ * deepSleepInterrupt (ISR context)
+ * Purpose: Flag main loop that the RTC alarm fired during delay-start deep sleep.
+ * Inputs: None
+ */
+void deepSleepInterrupt();
+
+/**
+ * burstSleepInterrupt (ISR context)
+ * Purpose: Flag main loop that the RTC alarm fired to end burst sleep.
+ * Inputs: None
+ */
+void burstSleepInterrupt();
+
+// ===========================
 // SETUP - SENSOR, TIMESTAMP, SD CARD
 // ===========================
 
 void setup() {
   power_timer3_disable();
   power_timer4_disable();
-  pinMode(LED_PIN, OUTPUT); // Activates the red LED on pin 13
+  pinMode(LED_PIN, OUTPUT);
   configureLedWarmupIndicator();
-  pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
   Serial.end();
   // Serial.begin(SERIAL_BAUD_RATE);  // Commented out to prevent blocking when USB disconnected
-  // while (!Serial);  // Removed to prevent blocking when USB disconnected 
+  // while (!Serial);  // Commented to prevent blocking when USB disconnected 
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
+
+  // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors included in the 32u4 are too weak 
+  // for square wave oscillator output but interrupts still work.
+  pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
   
   if (!rtc.begin()) {
     if (Serial) Serial.println(F("RTC Failed to initialize"));
@@ -226,8 +396,6 @@ void setup() {
     return;
   }
 
-  // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors included in the 32u4 are too weak 
-  // for square wave oscillator output but interrupts still work.
   rtc.disable32K();
   rtc.clearAlarm(1);
   rtc.clearAlarm(2);
@@ -236,6 +404,7 @@ void setup() {
   if (rtc.lostPower()) {
         // This will adjust to the date and time at compilation; recompile everytime MCU is flashed for accuracy
         // If the DS3231 has had continous MCU/battery power since last program flash, the time will not be changed
+        // Relying on this to set the correct time is a bad idea, but it's better that no date at all
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
         DateTime setTime = rtc.now();
         if (Serial) {
@@ -271,7 +440,7 @@ void setup() {
     oldSensor.begin();
   #endif
 
-    if (Serial) Serial.print(F("Initializing SD card..."));
+  if (Serial) Serial.print(F("Initializing SD card..."));
   
   if (!SD.begin(SD_CARD_SELECT_PIN)) { 
     if (Serial) Serial.println(F("Card Failed or Not Present"));
@@ -340,9 +509,6 @@ void setup() {
 
 void loop() {
     if (deepSleepFlag) {
-      // digitalWrite(LED_PIN, HIGH);
-      // delay(3000);
-      // digitalWrite(LED_PIN, LOW);
       deepSleepLog();
     }
     #if BURST_SAMPLING
@@ -362,9 +528,6 @@ void loop() {
         }
         burstSleepFlag = false;
       } else if (elapsed.totalseconds() > writeSeconds || BURST_SAMPLING_ONE_SAMPLE) {
-        // digitalWrite(LED_PIN, HIGH);
-        // delay(1);
-        // digitalWrite(LED_PIN, LOW);
         #if BURST_SAMPLING_ONE_SAMPLE
           performSensorReading();
         #endif
@@ -387,12 +550,8 @@ void loop() {
     #endif
 
     if (resetTimerFlag) {
-      // Serial.print("Resetting millis, was: ");
-      // Serial.println(millisAtInterrupt);
       resetTimer();
       resetTimerFlag = false;
-      // Serial.print("Now: ");
-      // Serial.println(millisAtInterrupt);
     }
 
     if (samplingFlag) {
@@ -433,13 +592,6 @@ void loop() {
 // ===========================
 // DATA ACQUISITION FUNCTIONS
 // ===========================
-/**
- * performSensorReading
- * Purpose: Read pressure and temperature from the active sensor and enqueue a data point with timestamp and battery voltage.
- * Inputs:
- *   - None (uses globals: currentSecond, millisAtInterrupt, currentVoltage, currentPressure, currentTemperature)
- * Usage: Called when `samplingFlag` is set or in one-sample burst mode.
- */
 void performSensorReading() {
     float currentTemperature, currentPressure;
     #if USE_NEW_SENSOR
@@ -447,11 +599,10 @@ void performSensorReading() {
       currentTemperature = newSensor.temperature();
       currentPressure = newSensor.pressure();
     #else
-      oldSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_512, &currentPressure, &currentTemperature);
+      oldSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_2048, &currentPressure, &currentTemperature);
     #endif
 
   updateLedWarmupIndicator();
-
     // Compute timestamp relative to last RTC tick without mutating global currentSecond
     uint16_t millisec = millis() - millisAtInterrupt;
     DateTime now = currentSecond;
@@ -463,13 +614,6 @@ void performSensorReading() {
     addToBuffer(now, millisec, currentPressure, currentTemperature, currentVoltage);
 }
 
-/**
- * getBatteryVoltage
- * Purpose: Measure battery voltage via ADC on `BATTERY_VOLTAGE_PIN` using divider ratio.
- * Inputs: None
- * Returns: float — battery voltage in volts.
- * Usage: Call once per second or as needed; ADC MUST enabled/disabled by caller.
- */
 float getBatteryVoltage() {
   int sensorValue = analogRead(BATTERY_VOLTAGE_PIN);
   float batteryVoltage = (sensorValue * REFERENCE_VOLTAGE) / MAX_ADC_VALUE; // Adafruit docs says this should also multiply by 2?
@@ -481,12 +625,6 @@ float getBatteryVoltage() {
 // RTC/TIME/SD UTILITIES
 // ===========================
 
-/**
- * resetTimer
- * Purpose: Synchronize timer-driven sampling to the RTC second tick; updates timekeeping and schedules next RTC alarm.
- * Inputs: None
- * Usage: Call after every RTC interrupt or when starting new sampling windows.
- */
 void resetTimer() {
   power_adc_enable();
   millisAtInterrupt = millis();
@@ -517,13 +655,6 @@ void resetTimer() {
 }
 
 
-/**
- * makeFileName
- * Purpose: Generate a daily-rotating CSV filename in the form MM-DD-XX.csv where XX increments from 00..99.
- * Inputs:
- *   - fileName: char* (out) — caller-provided buffer of length FILENAME_LENGTH.
- * Usage: Call once during setup before opening the SD file.
- */
 void makeFileName(char* fileName) {
   // Format: MM-DD-00.csv (e.g., 04-23-01.csv)
   DateTime now = rtc.now();
@@ -557,31 +688,12 @@ void makeFileName(char* fileName) {
   }
 }
 
-/**
- * setTimeStamp
- * Purpose: Provide FAT filesystem date/time for file creation/modification via SD library callback.
- * Inputs:
- *   - date: uint16_t* (out) — FAT date packed with year, month, day.
- *   - time: uint16_t* (out) — FAT time packed with hour, minute, second.
- * Usage: Registered as SdFile::dateTimeCallback handler.
- */
 void setTimeStamp(uint16_t* date, uint16_t* time) {
   DateTime now = rtc.now();
   *date = FAT_DATE(now.year(), now.month(), now.day());
   *time = FAT_TIME(now.hour(), now.minute(), now.second());
 }
 
-/**
- * writeToOutputFile
- * Purpose: Append a CSV line to the open SD file with timestamp, pressure, temperature, and battery voltage.
- * Inputs:
- *   - now: DateTime — timestamp (date and time to seconds).
- *   - millisec: int — millisecond offset within the second (0..999).
- *   - pressure: float — pressure in mbar.
- *   - temperature: float — temperature in °C.
- *   - batteryVoltage: float — battery voltage in V.
- * Usage: Call repeatedly to serialize buffered samples.
- */
 void writeToOutputFile(DateTime now, int millisec,float pressure, float temperature, float batteryVoltage) {
   // Write data to SD card
   outputFile.print(now.year());
@@ -621,17 +733,6 @@ void writeToOutputFile(DateTime now, int millisec,float pressure, float temperat
 // CIRCULAR BUFFER FUNCTIONS
 // ===========================
 
-/**
- * addToBuffer
- * Purpose: Push a data point into the circular buffer; overwrites oldest when full.
- * Inputs:
- *   - now: DateTime — timestamp for the sample (second resolution).
- *   - millisec: int — millisecond offset within the current second (0..999).
- *   - pressure: float — pressure reading in mbar.
- *   - temperature: float — temperature reading in °C.
- *   - batteryVoltage: float — battery voltage in V.
- * Usage: Call immediately after each sensor read to store data between SD writes.
- */
 void addToBuffer(DateTime now, int millisec, float pressure, float temperature, float batteryVoltage) {
   if (bufferCount >= BUFFER_SIZE) {
     bufferTail = (bufferTail + 1) % BUFFER_SIZE;
@@ -648,14 +749,6 @@ void addToBuffer(DateTime now, int millisec, float pressure, float temperature, 
   bufferHead = (bufferHead + 1) % BUFFER_SIZE;
 }
 
-/**
- * readFromBuffer
- * Purpose: Pop the oldest valid data point from the circular buffer.
- * Inputs:
- *   - data: DataPoint* (out) — caller-allocated struct to receive data.
- * Returns: bool — true if a valid data point was returned; false if buffer empty.
- * Usage: Use to remove and return the oldest data point from the buffer.
- */
 bool readFromBuffer(DataPoint* data) {
   if (bufferCount == 0) {
     return false; // Buffer is empty
@@ -681,20 +774,11 @@ bool readFromBuffer(DataPoint* data) {
 // SLEEP MANAGEMENT
 // ===========================
 
-/**
- * deepSleepLog
- * Purpose: Handle wake events during delayed start: if start time reached, initialize sampling; otherwise log a sample and return to deep sleep.
- * Inputs: None
- * Usage: Called from loop when `deepSleepFlag` is set by RTC interrupt during DELAY_START.
- */
 void deepSleepLog() {
   deepSleepFlag = false;
   DateTime now = rtc.now();
   DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
   if (now.unixtime() >= startDateTime.unixtime()) {
-    // digitalWrite(LED_PIN, HIGH);
-    // delay(100);
-    // digitalWrite(LED_PIN, LOW);
     rtc.clearAlarm(1);
     rtc.clearAlarm(2);
     rtc.disableAlarm(2);
@@ -711,27 +795,19 @@ void deepSleepLog() {
     millisAtInterrupt = millis();
     // Now continue with regular program execution
   } else {
-    // digitalWrite(LED_PIN, HIGH);
-    // delay(10000);
-    // digitalWrite(LED_PIN, LOW);
     power_adc_enable();
     performSensorReading();
     currentVoltage = getBatteryVoltage(); // Perform voltage reading after sensor reading to give ADC time to settle
     power_adc_disable();
     DataPoint data;
     readFromBuffer(&data);
-    writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, currentVoltage); // Don't use batteryVoltage from buffer because it is old
+    // Don't use batteryVoltage from buffer because it is old
+    writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, currentVoltage); 
     outputFile.flush();
     enterDelayDeepSleep();
   }
 }
 
-/**
- * enterDelayDeepSleep
- * Purpose: Configure RTC alarms for the target start date/time and enter deep sleep until then.
- * Inputs: None
- * Usage: Used when DELAY_START is enabled.
- */
 void enterDelayDeepSleep() {
   // Set RTC alarm to correct date
   // Serial.println(F("Entering RTC deep sleep"));
@@ -743,18 +819,8 @@ void enterDelayDeepSleep() {
   rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every day, taking a sample to track when/if battery dies
   if (Serial) Serial.println(F("Entering delay deep sleep"));
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-  // digitalWrite(LED_PIN, HIGH);
-  // delay(1000);
-  // digitalWrite(LED_PIN, LOW);
 }
 
-/**
- * enterBurstDeepSleep
- * Purpose: Schedule next wake time after a burst write window and enter deep sleep until then.
- * Inputs:
- *   - endTime: DateTime — timestamp when the last write window ended.
- * Usage: Used only when BURST_SAMPLING is enabled.
- */
 void enterBurstDeepSleep(DateTime endTime) {
   rtc.clearAlarm(1);
   DateTime now = rtc.now();
@@ -798,12 +864,6 @@ void enterBurstDeepSleep(DateTime endTime) {
   #endif
 }
 
-/**
- * setForeverIdleSleep
- * Purpose: Enter idle sleep indefinitely while keeping timers 0/1 running for millis tracking and sampling cadence.
- * Inputs: None
- * Usage: Use at end of loop to minimize power between events while preserving timer state.
- */
 void setForeverIdleSleep() {
   // TODO: See if turning on SPI/TWI improves data loss
   // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer sleep, they are already off
@@ -814,13 +874,6 @@ void setForeverIdleSleep() {
 // ERRORS/TROUBLESHOOTING
 // ===========================
 
-/**
- * error
- * Purpose: Indicate unrecoverable error by blinking LED a number of times equal to `errno`, repeated forever.
- * Inputs:
- *   - errno: uint8_t — error code and blink count.
- * Usage: Call on fatal conditions; function does not return.
- */
 void error (uint8_t errno) {
   while (1) {
     uint8_t blinkCount; // Counts error blinks
@@ -836,13 +889,6 @@ void error (uint8_t errno) {
   }
 }
 
-/**
- * configureLedWarmupIndicator
- * Purpose: Set the correct number of flashes at start-up for the current configuration, used to verify
- *          that the wave gauge is working correctly without serial port access.
- * Inputs: None, configures global variables ledWarmupToggleCount, ledWarmupToggleTarget, ledWarmupManualPulsePending
- * Usage: Run once within setup()
- */
 void configureLedWarmupIndicator() {
   ledWarmupToggleCount = 0;
   ledWarmupToggleTarget = 0;
@@ -877,12 +923,6 @@ void configureLedWarmupIndicator() {
   digitalWrite(LED_PIN, LOW);
 }
 
-/**
- * updateLedWarmupIndicator
- * Purpose: Toggle LED_PIN at program start for a set number of sensor readings
- * Inputs: None, uses global variables ledWarmupToggleCount, ledWarmupToggleTarget, ledWarmupManualPulsePending
- * Usage: Run within performSensorReadings() if LED diagnostics are desired
- */
 void updateLedWarmupIndicator() {
   if (ledWarmupManualPulsePending) {
     digitalWrite(LED_PIN, HIGH);
@@ -909,38 +949,18 @@ void updateLedWarmupIndicator() {
 // INTERRUPT SERVICE ROUTINES
 // ===========================
 
-/**
- * triggerSampling (ISR context)
- * Purpose: Flag main loop to perform a sensor read (Timer1 compare interrupt).
- * Inputs: None
- */
 void triggerSampling() {
     samplingFlag = true;
 }
 
-/**
- * resetTimerInterrupt (ISR context)
- * Purpose: Flag main loop to resynchronize timers on each RTC second tick.
- * Inputs: None
- */
 void resetTimerInterrupt() {
   resetTimerFlag = true;
 }
 
-/**
- * deepSleepInterrupt (ISR context)
- * Purpose: Flag main loop that the RTC alarm fired during delay-start deep sleep.
- * Inputs: None
- */
 void deepSleepInterrupt() {
   deepSleepFlag = true;
 }
 
-/**
- * burstSleepInterrupt (ISR context)
- * Purpose: Flag main loop that the RTC alarm fired to end burst sleep.
- * Inputs: None
- */
 void burstSleepInterrupt() {
   // Do nothing
 }
