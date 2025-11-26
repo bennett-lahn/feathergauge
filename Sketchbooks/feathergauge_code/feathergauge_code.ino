@@ -110,7 +110,8 @@ class CustomMS5803 : public MS5803 {
 constexpr uint8_t LED_PIN                        = 13;        // Built-in LED pin for status indication
 constexpr uint8_t RTC_INTERRUPT_PIN              = 1;         // RTC alarm interrupt pin (DS3231 SQW)
 constexpr uint8_t SD_CARD_SELECT_PIN             = 4;         // SPI chip select pin for SD card
-#define BATTERY_VOLTAGE_PIN           A9      // Analog pin for battery voltage measurement TODO: Currently not sure what type this is, so didn't convert to constexpr
+constexpr uint8_t BATTERY_VOLTAGE_PIN            = A9         // Analog pin for battery voltage measurement
+
 // Timing and frequency definitions
 constexpr unsigned long MICROSECONDS_PER_SECOND  = 1000000UL; // Conversion factor for time calculations
 constexpr float SAMPLE_TIME                      = (1.0f / SAMPLE_FREQ) * MICROSECONDS_PER_SECOND;  // Timer1 period in microseconds
@@ -120,8 +121,8 @@ constexpr uint8_t ERROR_BLINK_DELAY              = 100;       // LED on/off time
 constexpr uint8_t ERROR_PAUSE_DELAY              = 200;       // Pause between error blink cycles (ms)
 constexpr uint8_t ERROR_BLINK_CYCLE              = 10;        // Total blinks per error cycle
 
-const uint8_t LED_WARMUP_DEFAULT_FLASHES         = 6;
-const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS  = 100;
+const uint8_t LED_WARMUP_DEFAULT_FLASHES         = 6;         // Number of expected flashes from sensor readings at program start
+const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS  = 100;       // How long the single flash at program start for one-sample burst
 
 // ADC and voltage definitions
 constexpr uint16_t MAX_ADC_VALUE                 = 1024;      // Maximum ADC reading (10-bit resolution)
