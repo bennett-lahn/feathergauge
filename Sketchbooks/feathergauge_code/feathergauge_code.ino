@@ -110,7 +110,7 @@ class CustomMS5803 : public MS5803 {
 constexpr uint8_t LED_PIN                        = 13;        // Built-in LED pin for status indication
 constexpr uint8_t RTC_INTERRUPT_PIN              = 1;         // RTC alarm interrupt pin (DS3231 SQW)
 constexpr uint8_t SD_CARD_SELECT_PIN             = 4;         // SPI chip select pin for SD card
-constexpr uint8_t BATTERY_VOLTAGE_PIN            = A9         // Analog pin for battery voltage measurement
+constexpr uint8_t BATTERY_VOLTAGE_PIN            = A9;        // Analog pin for battery voltage measurement
 
 // Timing and frequency definitions
 constexpr unsigned long MICROSECONDS_PER_SECOND  = 1000000UL; // Conversion factor for time calculations
