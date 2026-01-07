@@ -3,6 +3,8 @@
 [![License: CC0-1.0](https://img.shields.io/badge/License-CC0%201.0-lightgrey.svg)](http://creativecommons.org/publicdomain/zero/1.0/)
 [![Arduino](https://img.shields.io/badge/Arduino-Compatible-00979D.svg)](https://www.arduino.cc/)
 
+![wavegaugephoto](https://github.com/user-attachments/assets/7709ae49-292d-47c7-b037-3c27de3b1bef)
+
 ## Overview
 
 The Feather Wave Gauge is an affordable, open-source instrument designed for coastal researchers, educators, and environmental monitoring. Built around the Adafruit Feather 32u4 Adalogger microcontroller and a high-precision pressure sensor, this system logs water pressure data that can be used to derive wave height, periods, and other hydrodynamic parameters.
