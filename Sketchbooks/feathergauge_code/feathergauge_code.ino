@@ -14,11 +14,11 @@
 // Set to false for rapid start
 // Set to true for delayed start, using selected start date
 // Untested, DO NOT USE. Set to "false"
-#define DELAY_START                  false
+#define DELAY_START                  true
 
 // Set to true for burst sampling
 // Set to false for constant sampling
-#define BURST_SAMPLING               true
+#define BURST_SAMPLING               false
 
 // Set to true if only one sample should be taken at each burst
 // Set to false if samples should be taken according to SAMPLE_FREQ during the
@@ -39,10 +39,10 @@ constexpr uint8_t sleepSeconds = 120;  // Number of seconds to sleep in burst sa
 // Edit for DELAY start ONLY
 #if DELAY_START // Date to start sampling
   const int startYear   = 2025; // Year to start sampling
-  const int startMonth  = 11;    // Month to start sampling
-  const int startDay    = 19;   // Day to start sampling
-  const int startHour   = 10;   // Hour to start sampling (24-hr format)
-  const int startMinute = 0;   // Minute to start sampling
+  const int startMonth  = 1;    // Month to start sampling
+  const int startDay    = 13;   // Day to start sampling
+  const int startHour   = 9;   // Hour to start sampling (24-hr format)
+  const int startMinute = 30;   // Minute to start sampling
   bool hasStarted = false;
 #else // Early dummy date to satisfy later conditional check
   const int startYear   = 2000; // DO NOT MODIFY
@@ -187,7 +187,6 @@ float currentVoltage;       // Voltage of battery, updated every second
 // Sampling flag for ISR to main loop communication
 volatile bool samplingFlag   = false;
 volatile bool resetTimerFlag = false;
-volatile bool deepSleepFlag  = false;
 volatile bool burstSleepFlag = false;
 volatile bool sleeping       = false;
 
@@ -961,7 +960,7 @@ void resetTimerInterrupt() {
 }
 
 void deepSleepInterrupt() {
-  deepSleepFlag = true;
+  // Do nothing
 }
 
 void burstSleepInterrupt() {
