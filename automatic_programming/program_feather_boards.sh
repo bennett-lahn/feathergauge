@@ -10,10 +10,11 @@ set -e  # Exit on any error
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ARDUINO_SKETCH_DIR="${SCRIPT_DIR}/Sketchbooks/Codes_v1/jorch_featherDIY_customizable"
-RTC_SETUP_SKETCH_DIR="${SCRIPT_DIR}/Sketchbooks/Codes_v1/rtc_setup"
-EEPROM_TEST_SKETCH_DIR="${SCRIPT_DIR}/Sketchbooks/eeprom_test"
-LIBRARY_CONFIG_DIR="${SCRIPT_DIR}/libraries"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ARDUINO_SKETCH_DIR="${PROJECT_ROOT}/Sketchbooks/feathergauge_code"
+RTC_SETUP_SKETCH_DIR="${PROJECT_ROOT}/Sketchbooks/rtc_setup"
+EEPROM_TEST_SKETCH_DIR="${PROJECT_ROOT}/Sketchbooks/eeprom_test"
+LIBRARY_CONFIG_DIR="${PROJECT_ROOT}/libraries"
 BOARD_FQBN="adafruit:avr:feather32u4"
 COMPILED_SKETCH_DIR="${SCRIPT_DIR}/compiled_sketches"
 LOG_FILE="${SCRIPT_DIR}/programming_log_$(date +%Y%m%d_%H%M%S).log"
@@ -109,7 +110,7 @@ setup_arduino_cli() {
 # Install common Arduino core libraries used by sketches
 install_core_libraries() {
     log_info "Ensuring core libraries are installed (SD)..."
-    local core_libs=(`SD)
+    local core_libs=("SD")
     for lib in "${core_libs[@]}"; do
         if arduino-cli lib install "$lib"; then
             log_success "Library installed: $lib"
@@ -123,11 +124,7 @@ install_core_libraries() {
 install_local_libraries() {
     log_info "Installing libraries from local files..."
     
-    local library_config_dir="${SCRIPT_DIR}/libraries"
-    local libraries_dir="${SCRIPT_DIR}/libraries"
-    
-    # Create libraries directory if it doesn't exist
-    mkdir -p "$libraries_dir"
+    local library_config_dir="${LIBRARY_CONFIG_DIR}"
     
     # Check if library_config directory exists
     if [ ! -d "$library_config_dir" ]; then
@@ -207,8 +204,8 @@ create_directory_structure() {
 compile_sketch() {
     log_info "Compiling Arduino sketch..."
     
-    if [ ! -f "$ARDUINO_SKETCH_DIR/jorch_featherDIY_customizable.ino" ]; then
-        log_error "Sketch file not found: $ARDUINO_SKETCH_DIR/jorch_featherDIY_customizable.ino"
+    if [ ! -f "$ARDUINO_SKETCH_DIR/feathergauge_code.ino" ]; then
+        log_error "Sketch file not found: $ARDUINO_SKETCH_DIR/feathergauge_code.ino"
         exit 1
     fi
     
@@ -221,7 +218,7 @@ compile_sketch() {
     
     if [ $? -eq 0 ]; then
         log_success "Sketch compiled successfully"
-        log_info "Compiled binary: $COMPILED_SKETCH_DIR/jorch_featherDIY_customizable.ino.hex"
+        log_info "Compiled binary: $COMPILED_SKETCH_DIR/feathergauge_code.ino.hex"
     else
         log_error "Sketch compilation failed"
         exit 1
@@ -277,21 +274,21 @@ compile_eeprom_test_sketch() {
 
 # Detect connected serial ports
 detect_ports() {
-    log_info "Detecting connected serial ports..."
+    log_info "Detecting connected serial ports..." >&2
     
     # Find all USB serial devices (common patterns for Feather boards)
     local ports=()
     
     # Check if running in WSL (usbipd devices)
     if [ -n "$WSL_DISTRO_NAME" ] || [ -n "$WSLENV" ]; then
-        log_info "Running in WSL - checking for usbipd devices..."
+        log_info "Running in WSL - checking for usbipd devices..." >&2
         # In WSL, usbipd devices typically appear as /dev/ttyUSB* or /dev/ttyACM*
         for device in /dev/ttyUSB* /dev/ttyACM*; do
             if [ -e "$device" ]; then
                 # Check if device is actually a Feather 32u4 by trying to communicate
                 if check_feather_device "$device"; then
                     ports+=("$device")
-                    log_info "Found Feather 32u4 at: $device (WSL usbipd device)"
+                    log_info "Found Feather 32u4 at: $device (WSL usbipd device)" >&2
                 fi
             fi
         done
@@ -302,25 +299,25 @@ detect_ports() {
                 # Check if device is actually a Feather 32u4 by trying to communicate
                 if check_feather_device "$device"; then
                     ports+=("$device")
-                    log_info "Found Feather 32u4 at: $device"
+                    log_info "Found Feather 32u4 at: $device" >&2
                 fi
             fi
         done
     fi
     
     if [ ${#ports[@]} -eq 0 ]; then
-        log_warning "No Feather 32u4 devices detected"
-        log_info "Make sure boards are connected and drivers are installed"
+        log_warning "No Feather 32u4 devices detected" >&2
+        log_info "Make sure boards are connected and drivers are installed" >&2
         if [ -n "$WSL_DISTRO_NAME" ] || [ -n "$WSLENV" ]; then
-            log_info "WSL detected - make sure devices are bound with usbipd"
-            log_info "Run from Windows: usbipd bind --busid <BUSID>"
+            log_info "WSL detected - make sure devices are bound with usbipd" >&2
+            log_info "Run from Windows: usbipd bind --busid <BUSID>" >&2
         else
-            log_info "Common device paths: /dev/ttyUSB*, /dev/ttyACM*, /dev/tty.usbmodem*"
+            log_info "Common device paths: /dev/ttyUSB*, /dev/ttyACM*, /dev/tty.usbmodem*" >&2
         fi
         return 1
     fi
     
-    log_success "Found ${#ports[@]} Feather 32u4 device(s): ${ports[*]}"
+    log_success "Found ${#ports[@]} Feather 32u4 device(s): ${ports[*]}" >&2
     echo "${ports[@]}"
 }
 
@@ -351,9 +348,55 @@ program_board() {
     
     log_info "Programming board $board_num on $device..."
     
-    # Program the device with bootloader reset using -r flag
-    # The -r flag performs 1200 bps reset and then programs at 57600 bps
-    if avrdude -p atmega32u4 -c avr109 -P "$device" -b 1200 -r -D -U "flash:w:$hex_file:i"; then
+    # Manually trigger bootloader reset using Python (more reliable in WSL than avrdude -r flag)
+    # Open port at 1200 bps to trigger reset, then close it
+    log_info "Triggering bootloader reset..."
+    python3 -c "
+import serial
+import time
+try:
+    ser = serial.Serial('$device', 1200)
+    time.sleep(0.1)
+    ser.close()
+    print('Reset triggered successfully')
+except Exception as e:
+    print(f'Reset trigger failed: {e}')
+    exit(1)
+" 2>&1
+    
+    if [ $? -ne 0 ]; then
+        log_error "Failed to trigger bootloader reset on $device"
+        return 1
+    fi
+    
+    # Wait for board to reset and bootloader to start
+    # In WSL, the USB device disconnects/reconnects during reset, and usbipd needs time to reattach
+    # The Feather 32u4 bootloader appears after ~2 seconds and stays active for ~8 seconds
+    log_info "Waiting for device to reset and usbipd to reattach..."
+    sleep 1
+    
+    # Wait for device to reappear (it may briefly disappear during reset)
+    local wait_count=0
+    while [ ! -e "$device" ] && [ $wait_count -lt 10 ]; do
+        sleep 0.5
+        ((wait_count++))
+    done
+    
+    if [ ! -e "$device" ]; then
+        log_error "Device $device did not reappear after reset"
+        return 1
+    fi
+    
+    # Give bootloader additional time to fully initialize
+    sleep 1
+    
+    log_info "Device ready, starting programming..."
+    
+    # Program the device using avrdude
+    # -b 57600: Bootloader communication speed (REQUIRED for Feather 32u4)
+    # -D: Don't erase chip before programming (faster, bootloader preserves itself)
+    # Note: Not using -r flag as we manually triggered reset above (more reliable in WSL)
+    if avrdude -p atmega32u4 -c avr109 -P "$device" -b 57600 -D -U "flash:w:$hex_file:i" 2>&1; then
         log_success "Successfully programmed board $board_num on $device"
         return 0
     else
@@ -513,7 +556,7 @@ test_eeprom_on_board() {
 # Program all detected boards with RTC setup
 program_all_boards() {
     local ports=("$@")
-    local main_hex_file="$COMPILED_SKETCH_DIR/jorch_featherDIY_customizable.ino.hex"
+    local main_hex_file="$COMPILED_SKETCH_DIR/feathergauge_code.ino.hex"
     local success_count=0
     local total_count=${#ports[@]}
     
@@ -620,7 +663,7 @@ main() {
 # Simple programming without RTC setup
 program_boards_simple() {
     local ports=("$@")
-    local hex_file="$COMPILED_SKETCH_DIR/jorch_featherDIY_customizable.ino.hex"
+    local hex_file="$COMPILED_SKETCH_DIR/feathergauge_code.ino.hex"
     local success_count=0
     local total_count=${#ports[@]}
     
@@ -659,20 +702,23 @@ show_usage() {
     echo ""
     echo "Options:"
     echo "  -h, --help         Show this help message"
-    echo "  -s, --sketch       Specify sketch directory (default: jorch_featherDIY_customizable)"
+    echo "  -s, --sketch       Specify sketch directory (default: feathergauge_code)"
     echo "  -o, --output       Specify output directory for compiled sketches"
     echo "  -l, --log          Specify log file location"
     echo "  --skip-rtc         Skip RTC setup and only program main sketch"
     echo ""
-    echo "Required file structure:"
-    echo "  Sketchbooks/Codes_v1/jorch_featherDIY_customizable/"
-    echo "    └── jorch_featherDIY_customizable.ino"
-    echo "  Sketchbooks/Codes_v1/rtc_setup/"
+    echo "Required file structure (relative to project root):"
+    echo "  Sketchbooks/feathergauge_code/"
+    echo "    └── feathergauge_code.ino"
+    echo "  Sketchbooks/rtc_setup/"
     echo "    └── rtc_setup.ino"
     echo "  Sketchbooks/eeprom_test/"
     echo "    └── eeprom_test.ino"
     echo "  libraries/"
     echo "    └── [library files: .zip, .tar.gz, or library directories]"
+    echo "  automatic_programming/"
+    echo "    ├── program_feather_boards.sh (this script)"
+    echo "    └── program_feather_boards_windows.ps1"
     echo ""
     echo "Required libraries (installed from libraries/):"
     echo "  - RTClib"

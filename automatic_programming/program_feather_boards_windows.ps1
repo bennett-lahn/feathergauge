@@ -288,6 +288,39 @@ function Bind-DevicesToWSL {
     return $boundDevices
 }
 
+# Monitor and reattach devices that become detached (e.g., during 1200 bps reset)
+function Monitor-AndReattachDevices {
+    param([array]$Devices)
+    
+    Write-Info "Monitoring devices and reattaching if needed..."
+    
+    foreach ($device in $Devices) {
+        try {
+            # Check device state
+            $listOutput = & usbipd list 2>&1 | Out-String
+            
+            # Check if device is in "Shared" state (bound but not attached to WSL)
+            # This happens when the device disconnects/reconnects during 1200 bps reset
+            if ($listOutput -match "$($device.BUSID)\s+239[aA]:[0-9a-fA-F]{4}.*Shared") {
+                Write-Warning "Device $($device.BUSID) is Shared but not Attached, reattaching..."
+                
+                # Reattach the device to WSL
+                $attachOutput = & usbipd attach --wsl --busid $device.BUSID 2>&1
+                Write-Host $attachOutput -ForegroundColor Gray
+                
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "Successfully reattached device $($device.BUSID)"
+                } else {
+                    Write-Warning "Failed to reattach device $($device.BUSID)"
+                }
+            }
+        }
+        catch {
+            Write-Warning "Error checking device $($device.BUSID): $_"
+        }
+    }
+}
+
 # Unbind devices from WSL
 function Unbind-DevicesFromWSL {
     param([array]$Devices)
@@ -303,6 +336,9 @@ function Unbind-DevicesFromWSL {
             Write-Host $detachOutput -ForegroundColor Gray
             
             if ($LASTEXITCODE -eq 0) {
+                # Wait for usbipd to update its device list after detaching
+                Start-Sleep -Seconds 2
+                
                 Write-Info "Unbinding device $($device.BUSID)..."
                 Write-Info "Running: usbipd unbind --busid $($device.BUSID)"
                 # Then unbind the device
@@ -324,21 +360,53 @@ function Unbind-DevicesFromWSL {
     }
 }
 
-# Run the Linux programming script
-function Invoke-LinuxScript {
-    Write-Info "Running Linux programming script..."
+# Run the Linux programming script with device monitoring
+function Invoke-LinuxScriptWithMonitoring {
+    param([array]$BoundDevices)
+    
+    Write-Info "Running Linux programming script with device monitoring..."
     
     try {
-        # Change to the script directory and run it
-        $scriptDir = Split-Path -Parent $ScriptPath
-        $scriptName = Split-Path -Leaf $ScriptPath
+        # Get the full Windows path to the script
+        $fullScriptPath = Resolve-Path $ScriptPath
+        $scriptDir = Split-Path -Parent $fullScriptPath
+        $scriptName = Split-Path -Leaf $fullScriptPath
         
-        Write-Info "Executing: $WSLPath bash -c 'cd $scriptDir && ./$scriptName'"
-        Write-Info "Running Linux programming script..."
+        # Convert Windows path to WSL path
+        $wslScriptDir = & $WSLPath wslpath -a "$scriptDir"
         
-        # Run WSL command and capture output
-        $wslCommand = "cd '$scriptDir' && ./$scriptName"
-        $wslOutput = & $WSLPath bash -c $wslCommand 2>&1
+        Write-Info "Script directory (Windows): $scriptDir"
+        Write-Info "Script directory (WSL): $wslScriptDir"
+        Write-Info "Script name: $scriptName"
+        Write-Info "Executing: $WSLPath bash -l -c 'cd $wslScriptDir && ./$scriptName'"
+        
+        # Start a background job to monitor and reattach devices
+        $monitorJob = Start-Job -ScriptBlock {
+            param($BoundDevices)
+            
+            # This job will run for up to 30 minutes monitoring devices
+            $endTime = (Get-Date).AddMinutes(30)
+            while ((Get-Date) -lt $endTime) {
+                foreach ($device in $BoundDevices) {
+                    try {
+                        $listOutput = & usbipd list 2>&1 | Out-String
+                        if ($listOutput -match "$($device.BUSID)\s+239[aA]:[0-9a-fA-F]{4}.*Shared") {
+                            & usbipd attach --wsl --busid $device.BUSID 2>&1 | Out-Null
+                        }
+                    }
+                    catch { }
+                }
+                Start-Sleep -Seconds 1
+            }
+        } -ArgumentList (,$BoundDevices)
+        
+        # Run WSL command directly (not as a job)
+        $wslCommand = "cd '$wslScriptDir' && ./$scriptName"
+        $wslOutput = & $WSLPath bash -l -c $wslCommand 2>&1
+        
+        # Stop the monitoring job
+        Stop-Job -Job $monitorJob -ErrorAction SilentlyContinue
+        Remove-Job -Job $monitorJob -ErrorAction SilentlyContinue
         
         # Display the output
         Write-Host $wslOutput -ForegroundColor Cyan
@@ -414,12 +482,13 @@ function Main {
     
     Write-ColorOutput ""
     Write-Info "Devices bound to WSL. Starting programming process..."
+    Write-Info "Note: Devices will be automatically reattached if they disconnect during reset"
     Write-ColorOutput ""
     
-    # Run the Linux script
+    # Run the Linux script with device monitoring
     $scriptSuccess = $false
     try {
-        $scriptSuccess = Invoke-LinuxScript
+        $scriptSuccess = Invoke-LinuxScriptWithMonitoring $boundDevices
     }
     finally {
         # Always try to unbind devices, even if script failed
