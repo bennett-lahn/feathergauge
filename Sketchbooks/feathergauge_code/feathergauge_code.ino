@@ -297,6 +297,7 @@ bool readFromBuffer(DataPoint* data);
 /**
  * delayStartDeepSleepLoop
  * Purpose: Enter deep sleep loop until start date/time is reached, logging samples periodically.
+ *          Function should leave state of system unchanged after returning
  * Inputs: None
  * Usage: Called once from setup() when DELAY_START is enabled.
  */
@@ -485,30 +486,29 @@ void setup() {
 
   #if DELAY_START
     delayStartDeepSleepLoop();      
-  #else
-    DateTime now = rtc.now();
-    rtc.disableAlarm(2);
-    // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
-    rtc.clearAlarm(1);
-    rtc.setAlarm1(rtc.now() + TimeSpan(1), DS3231_A1_PerSecond); 
-    #if !BURST_SAMPLING_ONE_SAMPLE
-      Timer1.initialize(SAMPLE_TIME);
-      Timer1.attachInterrupt(triggerSampling); // Every time Timer1 goes off, calls triggerSampling
-      attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
-    #endif
-    millisAtInterrupt = millis();
-    // Serial.println(F("READY!"));
-    #if BURST_SAMPLING
-      timeAtBurstSwitch = rtc.now();
-      if (Serial) {
-        Serial.print(F("[BURST] Start write window at "));
-        Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
-        Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
-        Serial.println(timeAtBurstSwitch.second());
-        Serial.print(F("[BURST] writeSeconds=")); Serial.print(writeSeconds);
-        Serial.print(F(", sleepSeconds=")); Serial.println(sleepSeconds);
-      }
-    #endif
+  #endif
+  DateTime now = rtc.now();
+  rtc.disableAlarm(2);
+  // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
+  rtc.clearAlarm(1);
+  rtc.setAlarm1(rtc.now() + TimeSpan(1), DS3231_A1_PerSecond); 
+  #if !BURST_SAMPLING_ONE_SAMPLE
+    Timer1.initialize(SAMPLE_TIME);
+    Timer1.attachInterrupt(triggerSampling); // Every time Timer1 goes off, calls triggerSampling
+    attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
+  #endif
+  millisAtInterrupt = millis();
+  // Serial.println(F("READY!"));
+  #if BURST_SAMPLING
+    timeAtBurstSwitch = rtc.now();
+    if (Serial) {
+      Serial.print(F("[BURST] Start write window at "));
+      Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
+      Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
+      Serial.println(timeAtBurstSwitch.second());
+      Serial.print(F("[BURST] writeSeconds=")); Serial.print(writeSeconds);
+      Serial.print(F(", sleepSeconds=")); Serial.println(sleepSeconds);
+    }
   #endif
 }
 
@@ -798,12 +798,16 @@ void delayStartDeepSleepLoop() {
   if (Serial) Serial.println(F("Entering delay deep sleep"));
 
   // Loop until start date is reached
-  do {
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  while (true) {
+    // ADC is OFF; ADC_ON setting prevents LowPower from turning it back on after waking up
+    LowPower.powerDown(SLEEP_FOREVER, ADC_ON, BOD_OFF);
 
     // Device has woken up
     DateTime now = rtc.now();
     if (now.unixtime() >= startDateTime.unixtime()) {
+      detachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN));
+      rtc.clearAlarm(1);
+      rtc.clearAlarm(2);
       return; // Exit loop and continue with setup()
     }
     
@@ -818,7 +822,7 @@ void delayStartDeepSleepLoop() {
     // Don't use batteryVoltage from buffer because it is old
     writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, currentVoltage);
     outputFile.flush();
-  } while (true);
+  }
 }
 
 void enterBurstDeepSleep(DateTime endTime) {
@@ -865,7 +869,6 @@ void enterBurstDeepSleep(DateTime endTime) {
 }
 
 void setForeverIdleSleep() {
-  // TODO: See if turning on SPI/TWI improves data loss
   // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer 
   // sleep, they are already off
   LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, 
