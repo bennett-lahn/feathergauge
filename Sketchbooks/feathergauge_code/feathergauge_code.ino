@@ -21,15 +21,15 @@
 #define BURST_SAMPLING               false
 
 // Set to true if only one sample should be taken at each burst
-// Set to false if samples should be taken according to SAMPLE_FREQ during the
-// write period
+// Set to false if samples should be taken according to SAMPLE_FREQ during the write period
+// Does nothing if BURST_SAMPLING is false
 #define BURST_SAMPLING_ONE_SAMPLE    true
 
 // ===========================
 // USER INPUTS:
 // Please set the below variables to reflect your sampling preferences.
 // ===========================
-constexpr uint8_t SAMPLE_FREQ = 1;   // Sampling frequency in Hz
+constexpr uint8_t SAMPLE_FREQ = 16;   // Sampling frequency in Hz
 
 // Burst sampling alternates between writing and sleeping according to set periods below
 constexpr uint8_t writeSeconds = 5;   // Number of seconds to sample data in burst sampling
@@ -38,7 +38,7 @@ constexpr uint8_t sleepSeconds = 120;  // Number of seconds to sleep in burst sa
 
 // Edit for DELAY start ONLY
 #if DELAY_START // Date to start sampling
-  const int startYear   = 2025; // Year to start sampling
+  const int startYear   = 2026; // Year to start sampling
   const int startMonth  = 1;    // Month to start sampling
   const int startDay    = 13;   // Day to start sampling
   const int startHour   = 9;   // Hour to start sampling (24-hr format)
@@ -492,7 +492,7 @@ void setup() {
   // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
   rtc.clearAlarm(1);
   rtc.setAlarm1(rtc.now() + TimeSpan(1), DS3231_A1_PerSecond); 
-  #if !BURST_SAMPLING_ONE_SAMPLE
+  #if !(BURST_SAMPLING && BURST_SAMPLING_ONE_SAMPLE)
     Timer1.initialize(SAMPLE_TIME);
     Timer1.attachInterrupt(triggerSampling); // Every time Timer1 goes off, calls triggerSampling
     attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
@@ -562,7 +562,7 @@ void loop() {
     }
 
     if (samplingFlag) {
-      #if !BURST_SAMPLING_ONE_SAMPLE
+      #if !(BURST_SAMPLING && BURST_SAMPLING_ONE_SAMPLE)
         performSensorReading();
       #endif
       samplingFlag = false;
