@@ -1,5 +1,5 @@
 // ===========================
-// USER DEFINED FLAGS: 
+// USER FLAGS: 
 // Please set the following three flags according to your sensor type and preferred collection type.
 // Type "true" (without quotes) or "false" (without quotes)
 // ===========================
@@ -67,26 +67,15 @@ constexpr uint8_t sleepSeconds = 10;  // Number of seconds to sleep in burst sam
 #include <TimerOne.h>
 #include <LowPower.h>
 
+// A note on using the SparkFun library:
+// This program uses a custom version of the SparkFun MS5803 with additional power optimizations
+// It REQUIRES the millis() macro from Arduino to be functioning
+
 #if USE_NEW_SENSOR
   #include "MS5837.h"
 #else
   #include "SparkFun_MS5803_I2C.h"
 #endif
-
-// A note on using the SparkFun library:
-// A very minor change to the SparkFun library is needed for this code to work. The sensorWait function in SparkFun_MS5803_I2C.h must be declared as virtual.
-// This change is used to override sensorWait for better power management.
-
-// Create custom MS5803 class to override sensorWait function for better power management
-class CustomMS5803 : public MS5803 {
-  public:
-    void sensorWait(uint8_t time) {
-      // sensorWait in SparkFun library is 1-10ms; the minimum sleep time is 16ms; In this sketch timer 0 wakes from idle after 1 ms regardless of sleep time
-      // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling), and TWI (used to communicate with pressure sensor)
-      // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't accidentally turn them back on, they are already off
-      LowPower.idle(SLEEP_15MS, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
-    }
-};
 
 // Timer 4 PRR bit is currently not defined in iom32u4.h
 #ifndef PRTIM4
@@ -819,7 +808,9 @@ void enterDelayDeepSleep() {
   rtc.setAlarm1(startDateTime, DS3231_A1_Date); // Alarm 1 triggers at the start time
   rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every day, taking a sample to track when/if battery dies
   if (Serial) Serial.println(F("Entering delay deep sleep"));
-  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  // LowPower libraries reenables peripheerals set to OFF, even if they were initially disabled
+  // ADC is currently disabled, so setting `ADC_ON` keeps it disabled even after waking up
+  LowPower.powerDown(SLEEP_FOREVER, ADC_ON, BOD_OFF);
 }
 
 void enterBurstDeepSleep(DateTime endTime) {

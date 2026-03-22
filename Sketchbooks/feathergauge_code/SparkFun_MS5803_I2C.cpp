@@ -1,3 +1,6 @@
+// **IMPORTANT** This library should only be used with feathergauge_code.ino,
+// as it contains assumptions about processor state for sleep management.
+
 /******************************************************************************
 MS5803_I2C.cpp
 Library for MS5803 pressure sensor.
@@ -271,13 +274,17 @@ void MS5803::sendCommand(uint8_t command)
 	_i2cPort->endTransmission();
 }
 
-// Only one MS5803 should ever call sensorWait() at any time
+// IMPORTANT: This function REQUIRES timer0 to be tracking milliseconds to work correctly.
 // ADC_256 waits for 1 ms, ADC_512 3 ms, ADC_1024 4 ms, ADC_2048 6 ms, AD_4096 10 ms
 // time parameter is in ms
+// Note: Setting `USB_OFF` may impact serial connection when debugging
 void MS5803::sensorWait(uint8_t time) {
    delay(time);
-   // unsigned long start = millis();
-   // while (millis() - start < time) {
-   //    LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_OFF, USB_OFF);
-   // }
+   unsigned long start = millis();
+   while (millis() - start < time) {
+      // In this sketch timer 0 wakes CPU from idle after 1 ms regardless of sleep time
+      // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling), and TWI (used to communicate with pressure sensor)
+      // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on, they are already off
+      LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
+   }
 }
