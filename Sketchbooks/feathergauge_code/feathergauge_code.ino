@@ -538,7 +538,9 @@ void enterDelayDeepSleep() {
   rtc.setAlarm1(startDateTime, DS3231_A1_Date); // Alarm 1 triggers at the start time
   rtc.setAlarm2(startDateTime, DS3231_A2_Hour); // Alarm 2 triggers every day, taking a sample to track when/if battery dies
   if (Serial) Serial.println(F("Entering delay deep sleep"));
-  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  // LowPower libraries reenables peripheerals set to OFF, even if they were initially disabled
+  // ADC is currently disabled, so setting `ADC_ON` keeps it disabled even after waking up
+  LowPower.powerDown(SLEEP_FOREVER, ADC_ON, BOD_OFF);
 }
 
 void enterBurstDeepSleep(DateTime endTime) {
