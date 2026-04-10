@@ -7,11 +7,6 @@
 // Type "true" (without quotes) or "false" (without quotes)
 // ===========================
 
-// Set to true for MS5837 (new pressure sensor)
-// Set to false for MS5803 (old pressure sensor)
-// RAPID users should always set this to false
-#define USE_NEW_SENSOR               false
-
 // Set to false for rapid start
 // Set to true for delayed start, using selected start date
 // Untested, DO NOT USE. Set to "false"

@@ -1,6 +1,10 @@
 #ifndef FEATHERGAUGE_CODE_H
 #define FEATHERGAUGE_CODE_H
 
+// ===========================
+// LIBRARIES
+// =========================== 
+
 #include "user_config.h"
 
 #include <Wire.h>
@@ -18,8 +22,46 @@
   #include "SparkFun_MS5803_I2C.h"
 #endif
 
+// ===========================
+// CLASSES
+// ===========================
+
 class MS5837;
 class MS5803;
+
+// Create custom MS5803 class to override sensorWait function for better power management
+class CustomMS5803 : public MS5803 {
+  public:
+    void sensorWait(uint8_t time) {
+      // sensorWait in SparkFun library is 1-10ms; the minimum sleep time is 16ms; In this sketch 
+      // timer 0 wakes MCU from idle after 1 ms regardless of sleep time.
+      // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling),
+      // and TWI (used to communicate with pressure sensor). ADC, timer 3, and timer 4 are set to
+      // ON so LowPower library doesn't accidentally turn them back on, they are already off
+      LowPower.idle(SLEEP_15MS, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, 
+                    USART1_OFF, TWI_ON, USB_OFF);
+    }
+};
+
+// ===========================
+// MACROS
+// ===========================
+
+// Timer 4 PRR bit is currently not defined in iom32u4.h
+#ifndef PRTIM4
+  #define PRTIM4 4  // Power Reduction Register bit for Timer 4
+#endif
+
+// Timer 4 power reduction macro is not defined currently in power.h, define it manually
+// This macro manipulates the MCU registers to disable timer 4
+#ifndef power_timer4_disable
+  #define power_timer4_disable()	(PRR1 |= (uint8_t)(1 << PRTIM4))
+#endif
+
+// This macro manipulates the MCU registers to enable timer 4
+#ifndef power_timer4_enable
+  #define power_timer4_enable()		(PRR1 &= (uint8_t)~(1 << PRTIM4))
+#endif
 
 // ===========================
 // CONSTANT DEFINITIONS
