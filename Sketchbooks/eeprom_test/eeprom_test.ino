@@ -25,5 +25,5 @@ void setup(){
 
 void loop() {
 	// Do nothing in main loop.
-	while(1);
+	delay(10);
 }
