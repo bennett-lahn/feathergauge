@@ -1,197 +1,372 @@
-# DIY Feather v4 Standard Operating Procedures 
+# Feather Wave Gauge
 
-Bret Webb (bwebb@southalabama.edu)
+[![License: CC0-1.0](https://img.shields.io/badge/License-CC0%201.0-lightgrey.svg)](http://creativecommons.org/publicdomain/zero/1.0/)
+[![Arduino](https://img.shields.io/badge/Arduino-Compatible-00979D.svg)](https://www.arduino.cc/)
 
-GitHub: https://github.com/bwebb-southal/feathergauge 
+![wavegaugephoto](https://github.com/user-attachments/assets/7709ae49-292d-47c7-b037-3c27de3b1bef)
 
-DesignSafe: coming soon
+## Overview
 
-## Arduino IDE Preparation
-If you have zero experience using the Arduino IDE, please refer to these tutorials [here](https://www.arduino.cc/en/Tutorial/HomePage)
+The Feather Wave Gauge is an affordable, open-source instrument designed for coastal researchers, educators, and environmental monitoring. Built around the Adafruit Feather 32u4 Adalogger microcontroller and a high-precision pressure sensor, this system logs water pressure data that can be used to derive wave height, periods, and other hydrodynamic parameters.
 
-1. Enable support for Adafruit boards in the Preferences menu by following [these directions](https://learn.adafruit.com/adafruit-feather-32u4-adalogger/setup)
+The wave gauge is particularly well-suited for:
+- Nearshore wave monitoring and coastal dynamics research
+- Storm surge and flood monitoring
+- Research deployments requiring multiple sensor arrays
 
-1. Add support for the Adafruit AVR boards using Board Manager under Tools/Boards using [these instructions](https://learn.adafruit.com/adafruit-feather-32u4-adalogger/setup)
+Data is logged to an onboard microSD card in CSV format for easy post-processing with standard analysis tools.
 
-1. Select the Adafruit Feather 32u4 under Tools / Board
-
-1. If this is your first time setting up your Arduino environment, you’ll need to add the necessary libraries. Libraries are managed using Tools / Manage Libraries in the Arduino IDE. The Nov2024 versions of the logger code sketches are compatible with the following libraries, and all of these need to be installed on your computer:
-
-    a. Blue Robotics MS5837 v1.1.1
-
-    b. SD v1.3.0
-
-    c. RTClib v2.1.4
-
-    d. TimerOne v1.1.1
-
-1. Add the logger code sketch to your default Arduino Sketchbook location folder… note that the code sketch must reside in a folder of the same name as the sketch… this is required! The Arduino Sketchbook location folder was established during the setup process when you installed the Arduino IDE software. However, it can be redefined at any time. This is defined in your Arduino IDE Preferences menu (File / Preferences).
-
-1. Ensure device is recognized in Tools/Port and select it. If you do not see your device, refer to Troubleshooting below. 
-
->[!NOTE]
-> Ensure that your files and software are installed on your computer and not in a cloud-based segment of your PC or Mac. We have observed inconsistent behavior when using cloud-based folders. Note that many new PCs, specifically laptops, will default to cloud-based or cloud-connected folders on your system. If your Arduino Sketchbook location folder is not defined in a path structure on your physical hard drive, things may not work very well.
+**Maintained by:** [NHERI RAPID](https://rapid.designsafe-ci.org/) 
 
 
+## Table of Contents
 
-## Deployment Preparation 
-Here are step-by-step instructions for preparing a DIY Feather v4 wave gauge for deployment. These steps assume that you already have your Arduino and environment prepared. If this is your first time using the gauge, please refer to the section at the end of this document regarding Arduino IDE Preparation. 
-
-1. charge the battery (plug the battery into the USB charging adapter, or plug the battery into the board and then plug the board into a computer or USB outlet)
-
-1. check the RTC
-   
-    a. Connect the board to the computer
-  
-    b. Open the Arduino software
-  
-    c. Open the sketch File/Examples/RTClib/ds3231
-  
-    d. Compile and upload the sketch to your board
-  
-    e. Open the serial monitor in the Arduino IDE (Tools / Serial Monitor) and confirm the date and time
-  
-    f. If the date/time is incorrect, uncomment line #25 then repeat steps 2d and 2e
-  
-    g. If the clock is still not correct, proceed to 3 below
-
-1. reset the RTC
-
-    a. remove coin cell battery for at least 60 seconds then replace it
-  
-    b. repeat steps 2c-2e
-
-1. upload logger sketch
-
-    a. There are four possible logger sketches as of Nov 2024: 1) rapid start with user-defined sampling rate; 2) delayed start with user-defined sampling rate; 3) rapid start with burst sampling; 4) delayed start with burst sampling
-  
-    b. Be sure to define your desired parameter values in the /* User Inputs */ section of each code sketch
-
-1. allow DIY gauge to sample for about 60 s
-
-1. disconnect usb 
-
-1. remove microsd
-
-1. insert microsd card into your computer
-
-1. check data file and confirm that date/time and pressure (and/or temperature) are correct
-
-1. remove data file(s)
-
-1. reinsert microsd card into board
+- [Overview](#overview)
+- [Features](#features)
+- [Repository Structure](#repository-structure)
+- [System Requirements](#system-requirements)
+- [Getting Started](#getting-started)
+  - [1. Software Installation](#1-software-installation)
+  - [2. Library Setup](#2-library-setup)
+  - [3. Arduino IDE Configuration](#3-arduino-ide-configuration)
+  - [4. Setting the Real-Time Clock](#4-setting-the-real-time-clock)
+  - [5. Uploading Main Code](#5-uploading-main-code)
+- [Configuration Options](#configuration-options)
+- [Operation](#operation)
+- [Data Format](#data-format)
+- [Deployment Guidelines](#deployment-guidelines)
+- [Battery Life](#battery-life)
+- [LED Status Indicators](#led-status-indicators)
+- [Troubleshooting](#troubleshooting)
+- [Post-processing](#post-processing)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
 
 
-## Deployment 
-When you are ready to deploy the gauge, follow these steps…
 
-1. plug in the battery 
+## Features
 
-1. confirm LED flashing* (as of versions labeled _v1):
+- **Low Cost**: Economical alternative to commercial wave gauges
+- **Flexible Sampling**: Supports continuous and burst sampling modes
+- **Autonomous Operation**: Battery-powered with long deployment durations, up to several months
+- **Real-Time Clock**: Accurate timestamping with RTC module
+- **Configurable**: User-adjustable sampling rates and burst parameters
 
-    a. rapid start, continuous sampling: solid green for about the first ~10 seconds then no other LEDs
+---
 
-    b. Rapid start, burst sampling: solid green during burst sampling; solid red during sleep interval 
+## Repository Structure
 
-    c. delayed start, continuous sampling: flashing red for ~20 seconds before start time; solid green for about the first ~10 seconds of continuous sampling
+```
+feathergauge/
+├── Sketchbooks/
+│   ├── feathergauge_code/     # Primary data logging firmware
+│   ├── rtc_setup/             # Real-time clock setup utility
+│   └── serial_number_generator/ # Tool to flash device identification number
+├── analysis_scripts/          # Python scripts for data quality analysis
+├── automatic_programming/     # Batch programming scripts and tools
+├── build_info/                # Hardware assembly documentation & CAD files
+└── libraries/                 # Required Arduino libraries (ZIP files)
+```
 
-    d. delayed start, burst sampling: flashing red for ~20 seconds before start time; solid green during burst sampling; solid red while sleeping in between bursts
+### Key Components
 
-1. insert components into gauge housing along with a small desiccant pack
+- **`Sketchbooks/feathergauge_code/`**: The primary Arduino sketch for data logging. Configure sampling parameters here before uploading.
+- **`Sketchbooks/rtc_setup/`**: Required utility to synchronize the real-time clock before use.
+- **`libraries/`**: All necessary Arduino libraries packaged as ZIP files.
+- **`automatic_programming/`**: Tools for programming multiple wave gauges efficiently (Windows and Linux).
+- **`build_info/`**: Hardware assembly guide, bill of materials, and 3D models for internal components.
 
-1. allow to sample** in atmospheric pressure for at least 1-2 minutes
 
-1. place all prepared gauges in a bucket filled with your seawater (preferably from your deployment location but freshwater will do) and allow to sample** for at least 1-2 minutes. Ensure all sensors are oriented similarly (sensor at the bottom of the bucket).
-   
-1. deploy sensor making sure you keep depth attenuation in mind… see guidance below.
+## System Requirements
 
-    a. Basically, you need to ensure your pressure sensor will detect the dynamic pressure fluctuations of your shortest wave periods, which attenuate quickly over the water column. 
+### Software
+- **Arduino IDE** (latest version recommended)
+- **Windows 10/11** (for automatic driver installation) or Linux/Mac with appropriate drivers
 
-    b. Figure 1 below shows the pressure decay coefficient as a function of wave period and water depth for four different deployment elevations (above the bed). You want to keep your decay coefficient as close to 1 as possible. You definitely want to stay out of the blue areas in these figures.
+### Target Hardware
+- **Microcontroller**: Adafruit Feather 32u4 Adalogger
+- **Pressure Sensor**: SparkFun MS5803, Blue Robotics Bar02 or equivalent MS5837-02BA
+- **Storage**: MicroSD card (8GB recommended, large capacity cards may not work correctly)
+- **RTC**: DS3231 Real-time clock, connected to microcontroller using SPI
 
-    c. Example: if you deploy a gauge on the bed in 3 m of water, you won’t detect any dynamic pressure (or hardly any) for wave periods less than or equal to 2 s. 
 
-1. recommend deploying the gauge horizontally or vertically, and if vertically do so with sensor port pointing downward 
+## Getting Started
 
->[!NOTE]
-> In step 2: if you would like to conserve more battery power, disabling the LED flashing is a fairly simple task. Any/all commands labeled “digitalWrite(----)” within the void loop() structure can be commented out with no impact to the code operation whatsoever. To comment (i.e., disable) out the LED blinking, simply place your cursor on the line of code (to the left of) containing the active digitalWrite(8, xxx) or digitalWrite(13, xxx) command, then select Edit / Comment/Uncomment from the Arduino IDE menu. If the line is active, it will become inactive, you’ll see  two “//” before the statement, and the text will turn gray. To reactivate that line of code, either remove the “//” or select Edit / Comment/Uncomment again and the line of code will become active once again.
+### 1. Software Installation
 
->[!NOTE]
-> In steps 4-5: this only makes sense if you are using the rapid start version of the logger code sketches. If you are using the rapid start code with burst sampling, make sure you are logging atmospheric and bucket test pressures during your burst interval (refer to LED flashing codes above for reference). If you are using the delayed start version of the code sketches, it may not be possible to sample atmospheric or bucket test pressures prior to deployment. If that is the case, I strongly recommend doing these things at the end of your deployment (before removing the battery). The atmospheric and bucket test pressure samples allow you to perform minor corrections to ensure consistent measurement values across your gauges. The inexpensive pressure sensors seem to have small offsets that, while not necessary, could be advantageous to correct by comparing their values under static conditions.
+**Download the Arduino IDE** from [arduino.cc](https://www.arduino.cc/en/software)
 
+**Configure Board Support:**
+
+1. Open Arduino IDE and navigate to **File → Preferences**
+2. Add the Adafruit boards URL to "Additional Boards Manager URLs":
+   ```
+   https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+   ```
+   [Detailed instructions](https://learn.adafruit.com/adafruit-feather-32u4-adalogger/setup)
+
+3. Go to **Tools → Board → Boards Manager**
+4. Search for "Adafruit AVR Boards" (leave Type set to "All")
+5. Install the board package
+6. **Close and reopen Arduino IDE** (required for changes to take effect)
+
+> **Windows 10/11 Users**: Driver installation is automatic. No manual driver installation required.
+
+### 2. Library Setup
+
+1. Download this entire repository as a ZIP file (**Code → Download ZIP**)
+2. Extract to a location on your local hard drive
+3. In Arduino IDE, navigate to **Sketch → Include Library → Add .ZIP Library...**
+4. Navigate to the `libraries/` folder in the extracted repository
+5. Add each `.ZIP` file one at a time:
+   - `Adafruit_BusIO-master.zip`
+   - `Low-Power-1.81.zip`
+   - `RTClib-2.1.4.zip`
+   - `SD-master.zip`
+   - `TimerOne-<version>.zip`
+
+> **Troubleshooting**: If you see compilation errors like `xxx.h: No such file or directory`, close and reopen Arduino IDE after installing each library.
+
+### 3. Arduino IDE Configuration
+
+1. Connect the Feather board to your computer using a micro-USB cable
+2. In Arduino IDE, click the board selection dropdown (upper left)
+3. Click **"Select other board and port..."**
+4. Under **Boards**, search for and select **"Adafruit Feather 32u4"**
+5. Under **Ports**, select the COM port labeled with **(USB)**
+   - If multiple USB ports appear, try each until successful upload
+
+### 4. Setting the Real-Time Clock
+
+The RTC must be set for proper timestamping. This is a one-time setup unless the RTC battery is removed.
+
+**Setting the Clock:**
+
+1. Open `Sketchbooks/rtc_setup/rtc_setup.ino` in Arduino IDE
+2. Ensure the correct board and port are selected
+3. Click **Upload**
+   - If upload hangs on "Waiting for upload port," press the **small black reset button** on the board
+4. Once uploaded, open **Serial Monitor** (magnifying glass icon, top right)
+5. Set baud rate to **57600 baud** if message appears corrupted
+6. Type the current date/time in the Serial Monitor message box using this format:
+   ```
+   MMM DD YYYY HH:MM:SS
+   ```
+   Example: `Dec 19 2025 14:30:00` (24-hour format)
+8. Enter the command a few seconds ahead of actual time, then press Enter when time matches
+9. The RTC is now synchronized. Ensure a CR1220 coin cell battery is installed for backup power.
+
+### 5. Uploading Main Code
+
+> **Critical**: Follow this sequence exactly for proper operation.
+
+1. Ensure the device is powered off (no USB, no battery)
+2. Insert microSD card into SD card slot
+3. Connect battery (if applicable)
+4. Connect USB cable to computer
+5. Open `Sketchbooks/feathergauge_code/feathergauge_code.ino`
+6. Configure sampling parameters (see [Configuration Options](#configuration-options))
+7. Click **Upload**
+   - If upload hangs, press the **reset button** when "Waiting for upload port" appears
+8. Once upload completes, disconnect USB cable
+9. The red LED will flash **1-6 times** then stop, indicating successful startup
+
+> **⚠️ Error**: Continuously flashing LED indicates a fatal error. See [LED Status Indicators](#led-status-indicators).
+
+---
+
+## Configuration Options
+
+Edit lines 1-50 of `feathergauge_code.ino` before uploading to configure sampling behavior:
+
+### Continuous Sampling Mode
+```cpp
+SAMPLE_FREQ = 16;  // Sampling frequency in Hz
+BURST_SAMPLING = false;
+BURST_SAMPLING_ONE_SAMPLE = false;
+DELAY_START = false;
+```
+
+### Burst Sampling Mode
+```cpp
+SAMPLE_FREQ = 16;  // Frequency during burst
+BURST_SAMPLING = true;
+BURST_SAMPLING_ONE_SAMPLE = false;  // Set true for single sample per burst
+writeSeconds = 30;   // Sampling duration (seconds)
+sleepSeconds = 120;  // Sleep duration between bursts (seconds)
+DELAY_START = false;
+```
+
+### Single Sample Burst Mode
+```cpp
+SAMPLE_FREQ = 1;  // Must be 1 Hz for single sample
+BURST_SAMPLING = true;
+BURST_SAMPLING_ONE_SAMPLE = true;
+writeSeconds = 5
+sleepSeconds = 120;
+DELAY_START = false;
+```
+
+> **⚠️ Note**: `DELAY_START` is currently unsupported. Always set to `false`.
+
+**Battery Life Considerations:**
+- Higher sampling frequencies reduce battery life
+- Burst sampling with longer sleep intervals extends battery life
+
+## Operation
+
+### Starting the Wave Gauge
+
+**After Initial Programming:**
+The gauge starts automatically after uploading code (see step 5 above).
+
+**Restarting After Battery Disconnect:**
+Plug in the battery. If the gauge starts successfully, you will see 1-6 LED flashes, just as when the wave gauge was programmed.
+
+## Data Format
+
+### File Naming
+- Format: `MM-DD-YY.CSV` (date when sampling began)
+- Example: `12-19-25.CSV` for December 19, 2025
+
+### CSV Structure
+Each file contains:
+- **Header row**: Wave gauge serial number and metadata
+- **Data rows**: Timestamp, pressure (mbar), temperature (°C)
+
+### Example CSV Output
+```csv
+W.G. Num: 01,Timestamp,Pressure [mbar],Temp [deg C],Battery [VDC]
+2025/9/19,12:19:51:018,1006.20,26.94,4.47
+2025/9/19,12:19:51:078,1006.30,26.95,4.47
+```
+
+## Deployment Guidelines
+
+### Orientation
+**Always deploy with sensor facing down**. This prevents immersion of electronics if a minor leak occurs, maximizing data recovery probability
+
+
+### Depth Considerations for Wave Monitoring
+Sensors should be positioned to detect dynamic pressure fluctuations of the shortest wave period. Wave-induced pressure attenuates exponentially with depth:
+
+- **Decay Coefficient (K)**: Want K ≈ 1.0 for target wave periods
+- **Avoid**: Placing sensors too high above seabed for short-period waves
+- **Example**: At 3m depth on seabed, wave periods ≤2s will not be detected
 
 ![pressuredecayguide](https://github.com/user-attachments/assets/69788a87-37ee-42d7-9b7c-4da35f923b32)
 Figure 1. Deployment Guidance for Pressure Attenuation with Depth
 
 
-## Post-Deployment Recovery
-Here are some suggested step-by-step procedures to consider after you retrieve your DIY wave gauge…
+### Pre-Deployment Testing (Recommended)
+1. Allow gauge to sample in atmospheric pressure for 1-2 minutes
+2. Submerge all gauges in bucket of seawater (sensor at bottom)
+3. Sample for 1-2 minutes with consistent orientation
+4. Use these reference samples for minor calibration adjustments
 
-1. do not open gauge before cleaning thoroughly 
+### Recovery
+1. Keep gauge sensor-down during recovery to prevent water intrusion
+2. **⚠️ Warning**: If leak occurred, gauge may be under pressure. Do not point at self when opening.
+3. Inspect for water with sensor-down orientation
+4. If water present: Remove electronics, unplug battery, pour out water
+5. Do not reuse water-exposed batteries
+6. Allow to dry completely before reinserting electronics
 
-1. submerge gauge in a bucket of warm water mixed with distilled white vinegar (and dish soap if you like, but the dish soap is not necessary)
+---
 
-1. if gauges are considerably fouled, consider adding baking soda as this will combine with the vinegar to produce strong agitation and fizzing (definitely do not use dish soap here)
+## Battery Life
 
-1. do not touch the gel membrane inside of the pressure sensor no matter what you do 
+| Configuration | Battery Capacity | Estimated Life |
+|--------------|------------------|----------------|
+| Single sample burst (2 min interval) | 4400 mAh | ~2 months |
+| Single sample burst (2 min interval) | 10500 mAh | >3 months |
+| 16 Hz continuous sampling | 4400 mAh | ~3 weeks |
+| 16 Hz continuous sampling | 10500 mAh | >1 month |
 
-1. remove from cleaning bath and wipe dry
 
-1. remove cap 
+---
 
-1. inspect for signs of moisture 
+## LED Status Indicators
 
-1. remove internal components 
+### Normal Operation
+| Flash Count | Meaning |
+|-------------|---------|
+| 1-6 flashes then off | **Normal** - Program started successfully |
 
-1. disconnect battery 
+### Error Codes (Continuous Flashing)
+| Flash Count | Meaning | Solution |
+|-------------|---------|----------|
+| 1 flash (repeating) | **SD Card Error** - Not initialized | Check SD card insertion; verify card format; try different card |
+| 2 flashes (repeating) | **File Creation Error** - Cannot write to SD | Check SD card has free space; verify card is not write-protected; card may be faulty |
 
-1. remove microsd card
-
-## Post-Processing 
-The gauge data will be saved to CSV files on the microsd card. Post-processing the pressure data can be done in a variety of ways. We have posted some example post-processing scripts written in MATLAB. If you don’t have access to MATLAB you might find your own alternative method for processing the data. Just remember that the pressure values are absolute… so you need to subtract out atmospheric pressure. Ideally, you would have an atmospheric reference nearby so that you have a time-series of data, but in a pinch you can use an average/estimated value of atmospheric pressure. Each millibar of atmospheric pressure corresponds to (approximately) 1 cm of water height change. 
-
-1. insert microsd card into your computer 
-
-1. save the files to your computer
-
-1. run the MATLAB post-processing scripts or process using your own codes
-
+---
 
 ## Troubleshooting
 
-1. My board isn’t recognized by Arduino IDE: make sure you are using a power+data cable… many micro USB cables are power only… if the device is not recognized as a com port under device manager (windows) then you’re probably using a power only cable.
+### Board Not Recognized by Arduino IDE
+- **Cause**: Using power-only USB cable
+- **Solution**: Use a data+power micro-USB cable. Check Device Manager (Windows) for COM port.
 
-1. My board isn’t recognized by Arduino IDE and I am sure that I am using an appropriate power+data cable: try resetting the bootloader on the feather logger board (see below).
+### Date/Time Incorrect
+- **Solution**: Refer to [Setting the Real-Time Clock](#4-setting-the-real-time-clock)
+- Ensure CR1220 coin cell battery is installed for RTC backup
 
-1. I need to reset my bootloader: you’ll need access to the small black reset button located near the micro USB plug on top of the board. With the board plugged in, open the blink sketch found in File / Examples / Basics / Blink. Click the compile/upload “arrow” icon. Immediately double tap the reset button. This should resolve the issue. You may need to do this a few times. 
+### Compilation Errors
+- **Library not found**: Close and reopen Arduino IDE after installing libraries
+- **Board not selected**: Ensure "Adafruit Feather 32u4" is selected in Tools → Board
+- **Port not available**: Check USB cable connection and try different port
 
-1. My date/time are incorrect: refer to 2 and 3 in the Deployment Preparation section above.
+### Logger Not Working
+1. Upload simple test: **File → Examples → Basics → Blink**
+   - If fails: Board hardware issue
+   - If works: Check below
 
-1. My logger isn’t working correctly: try uploading something simple like File / Examples / Basics / Blink. Does that work? If not, there’s likely an issue with your board. If yes, see below.
+2. Check microSD card:
+   - Is it inserted correctly?
+   - Using recommended 8GB card? (Large capacity cards may not be supported)
+   - Is card formatted correctly?
 
-1. My logger still isn’t working: 
+3. Check code configuration:
+   - Verify all parameters in lines 1-50 are set correctly
+   - Ensure `DELAY_START = false`
 
-    a. Check your microsd card. Is it installed correctly? Are you using the recommended 8gb microsd card? If not, this may be the issue. The logger cannot handle large microsd cards.
+### Values Don't Make Sense
+1. **Check wiring**: Ensure SCL and SDA are not reversed
+2. **Test sensor directly**:
+   - Open **File → Examples → BlueRobotics MS5837 Library → MS5837_example**
+   - Change `sensor.setModel(MS5837::MS5837_30BA);` to `sensor.setModel(MS5837::MS5837_02BA);`
+   - Open Serial Monitor to verify readings
 
-    b. Check your wiring. 
+### Upload Hangs on "Waiting for upload port"
+- Press the small black reset button on the board when this message appears
+- This forces the board into bootloader mode
 
-    c. Perform a continuity check.
+---
 
-1. My logger is writing to the microsd card, but the values don’t make sense.
+## Post-processing
 
-    a. Check your wiring… make sure you did not reverse the SCL and SDA wires.
+Data files contain **absolute pressure** readings. Post-processing steps:
 
-    b. Try using the simple sketch provided by the MS5837 pressure sensor manufacturer by going to File / Examples / BlueRobotics MS5837 Library / MS5837_example. Before uploading, you’ll need to change one line in the code. Refer to the line with…
+**Subtract atmospheric pressure** to obtain gauge pressure
+   - Use nearby atmospheric reference time-series (preferred)
+   - Or use estimated average atmospheric pressure
+   - Conversion: 1 millibar ≈ 1 cm water height
 
-    ```
-      sensor.setModel(MS5837::MS5837_30BA);
-    ```
-    and change the _30BA to _02BA as follows…
-    ```
-	    sensor.setModel(MS5837::MS5837_02BA);
-    ```
-    then open Serial Monitor and see if the values make sense.
+---
 
-1. open for addressing future issues…
+## License
 
+This project is licensed under **CC0 1.0 Universal** (Creative Commons Public Domain Dedication) - see the [LICENSE](LICENSE) file for details.
 
+**Exception**: The `serial_number_generator` component (`Sketchbooks/serial_number_generator/`) is licensed under **GNU GPL v3** - see [Sketchbooks/serial_number_generator/license.txt](Sketchbooks/serial_number_generator/license.txt) for details.
+
+**Included Libraries**: Arduino libraries have their own licenses, which can be viewed by searching for them in the Arduino IDE.
+
+---
+
+## Acknowledgments
+
+Special thanks to:
+
+- Bret Webb at the University of South Alabama for his research that developed the feather wave gauge.
+- Jordan Cheung from the University of Washington for her help improving the wave gauge's software functionality.

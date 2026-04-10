@@ -55,9 +55,7 @@ void loop() {
         Serial.println("SUCCESS: RTC time set successfully");
         displayCurrentTime();
         blinkSuccess();
-        
-        // Wait a moment then exit
-        delay(2000);
+        delay(200);
         Serial.println("RTC setup complete. Ready for main program.");
         digitalWrite(LED_PIN, HIGH); // Keep LED on to indicate completion
         while (1) delay(1000); // Stay in loop
