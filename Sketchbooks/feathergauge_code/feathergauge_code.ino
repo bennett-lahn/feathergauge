@@ -17,10 +17,13 @@
 class CustomMS5803 : public MS5803 {
   public:
     void sensorWait(uint8_t time) {
-      // sensorWait in SparkFun library is 1-10ms; the minimum sleep time is 16ms; In this sketch timer 0 wakes from idle after 1 ms regardless of sleep time
-      // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling), and TWI (used to communicate with pressure sensor)
-      // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't accidentally turn them back on, they are already off
-      LowPower.idle(SLEEP_15MS, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
+      // sensorWait in SparkFun library is 1-10ms; the minimum sleep time is 16ms; In this sketch 
+      // timer 0 wakes MCU from idle after 1 ms regardless of sleep time.
+      // Turn off everything except timer 0 (used for millis), timer 1 (used for sampling),
+      // and TWI (used to communicate with pressure sensor). ADC, timer 3, and timer 4 are set to
+      // ON so LowPower library doesn't accidentally turn them back on, they are already off
+      LowPower.idle(SLEEP_15MS, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, 
+                    USART1_OFF, TWI_ON, USB_OFF);
     }
 };
 
@@ -29,13 +32,15 @@ class CustomMS5803 : public MS5803 {
   #define PRTIM4 4  // Power Reduction Register bit for Timer 4
 #endif
 
-// Timer 4 power reduction macro is not defined currently in power.h
+// Timer 4 power reduction macro is not defined currently in power.h, define it manually
+// This macro manipulates the MCU registers to disable timer 4
 #ifndef power_timer4_disable
-  #define power_timer4_disable()	(PRR1 |= (uint8_t)(1 << PRTIM4))  // Disable Timer 4 to save power
+  #define power_timer4_disable()	(PRR1 |= (uint8_t)(1 << PRTIM4))
 #endif
 
+// This macro manipulates the MCU registers to enable timer 4
 #ifndef power_timer4_enable
-  #define power_timer4_enable()		(PRR1 &= (uint8_t)~(1 << PRTIM4))  // Enable Timer 4
+  #define power_timer4_enable()		(PRR1 &= (uint8_t)~(1 << PRTIM4))
 #endif
 
 // Shared constants, structs, extern declarations, and function declarations.
@@ -69,26 +74,25 @@ int bufferCount       = 0;  // Number of items in buffer
 bool bufferOverflow   = false; // Flag to indicate buffer overflow
 
 DateTime timeAtBurstSwitch; // Time burst switched between sleep and record
-DateTime currentSecond;     // Time of current second
+DateTime currentDateTime;     // Time of current second
 float currentVoltage;       // Voltage of battery, updated every second
 
 // Sampling flag for ISR to main loop communication
 volatile bool samplingFlag   = false;
 volatile bool resetTimerFlag = false;
-volatile bool deepSleepFlag  = false;
 volatile bool burstSleepFlag = false;
 volatile bool sleeping       = false;
 
 // Number of milliseconds at last 1 Hz interrupt from RTC
 unsigned long millisAtInterrupt = 0; 
 
-// # of times the LED should be toggled (switched between on/off) during the start-up verification phase
+// # of times the LED should be toggled (on->off = 1 toggle) during the start-up verification phase
 uint8_t ledWarmupToggleTarget = 0;
 
 // Current # of times the LED has been toggled
 uint8_t ledWarmupToggleCount  = 0;
 
-// True if LED should be toggled only once (blocking for LED_WARMUP_MANUAL_FLASH_DELAY_MS) during start-up
+// True if LED should be toggled only once during start-up
 bool ledWarmupManualPulsePending = false;
 
 // ===========================
@@ -102,12 +106,12 @@ void setup() {
   configureLedWarmupIndicator();
   Serial.end();
   // Serial.begin(SERIAL_BAUD_RATE);  // Commented out to prevent blocking when USB disconnected
-  // while (!Serial);  // Commented to prevent blocking when USB disconnected 
+  // while (!Serial);                 // Commented to prevent blocking when USB disconnected 
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
 
-  // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors included in the 32u4 are too weak 
-  // for square wave oscillator output but interrupts still work.
+  // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors 
+  // included in the 32u4 are too weak for square wave oscillator output but interrupts still work.
   pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
   
   if (!rtc.begin()) {
@@ -115,19 +119,21 @@ void setup() {
     error(2);
     return;
   }
-
   rtc.disable32K();
   rtc.clearAlarm(1);
   rtc.clearAlarm(2);
   rtc.writeSqwPinMode(DS3231_OFF);
 
   if (rtc.lostPower()) {
-        // This will adjust to the date and time at compilation; recompile everytime MCU is flashed for accuracy
-        // If the DS3231 has had continous MCU/battery power since last program flash, the time will not be changed
-        // Relying on this to set the correct time is a bad idea, but it's better that no date at all
+        // This will adjust to the date and time at compilation; recompile everytime MCU is 
+        // flashed for accuracy. If the DS3231 has had continous MCU/button battery power since 
+        // last program flash, the time will not be changed.
+
+        // **Relying on this to set the correct time is a bad idea**, but it's better than 
+        // no date at all
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-        DateTime setTime = rtc.now();
         if (Serial) {
+          DateTime setTime = rtc.now();
           Serial.print(F("RTC time set to: "));
           Serial.print(setTime.year());
           Serial.print('/');
@@ -142,10 +148,6 @@ void setup() {
           Serial.println(setTime.second());
         }
   }
-
-  currentSecond = rtc.now();
-  currentVoltage = getBatteryVoltage();
-  power_adc_disable();
   
   #if USE_NEW_SENSOR
     if (!newSensor.init()) {
@@ -194,32 +196,37 @@ void setup() {
     error(ERROR_FILE_OPEN_FAILED);
   }
 
+  currentDateTime = rtc.now();
+  currentVoltage = getBatteryVoltage();
+  power_adc_disable();
+
+  rtc.disableAlarm(2);
   #if DELAY_START
-    enterDelayDeepSleep();      
-  #else
-    DateTime now = rtc.now();
-    rtc.disableAlarm(2);
-    // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
-    rtc.clearAlarm(1);
-    rtc.setAlarm1(rtc.now() + TimeSpan(1), DS3231_A1_PerSecond); 
-    #if !BURST_SAMPLING_ONE_SAMPLE
-      Timer1.initialize(SAMPLE_TIME);
-      Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
-      attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
-    #endif
-    millisAtInterrupt = millis();
-    // Serial.println(F("READY!"));
-    #if BURST_SAMPLING
-      timeAtBurstSwitch = rtc.now();
-      if (Serial) {
-        Serial.print(F("[BURST] Start write window at "));
-        Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
-        Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
-        Serial.println(timeAtBurstSwitch.second());
-        Serial.print(F("[BURST] writeSeconds=")); Serial.print(writeSeconds);
-        Serial.print(F(", sleepSeconds=")); Serial.println(sleepSeconds);
-      }
-    #endif
+    delayStartDeepSleepLoop();
+    power_adc_enable();
+    currentDateTime = rtc.now();
+    currentVoltage = getBatteryVoltage();
+    power_adc_disable();
+  #endif
+  // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
+  rtc.clearAlarm(1);
+  rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond); 
+  #if !(BURST_SAMPLING && BURST_SAMPLING_ONE_SAMPLE)
+    Timer1.initialize(SAMPLE_TIME);
+    Timer1.attachInterrupt(triggerSampling); // Every time Timer1 goes off, calls triggerSampling
+    attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
+  #endif
+  millisAtInterrupt = millis();
+  #if BURST_SAMPLING
+    timeAtBurstSwitch = currentDateTime;
+    if (Serial) {
+      Serial.print(F("[BURST] Start write window at "));
+      Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
+      Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
+      Serial.println(timeAtBurstSwitch.second());
+      Serial.print(F("[BURST] writeSeconds=")); Serial.print(writeSeconds);
+      Serial.print(F(", sleepSeconds=")); Serial.println(sleepSeconds);
+    }
   #endif
 }
 
@@ -228,9 +235,6 @@ void setup() {
 // ===========================
 
 void loop() {
-    if (deepSleepFlag) {
-      deepSleepLog();
-    }
     #if BURST_SAMPLING
       // If true, write time ended; write to SD card and sleep
       if (burstSleepFlag) {
@@ -254,7 +258,8 @@ void loop() {
         DateTime endTime = rtc.now();
         DataPoint data;
         while (readFromBuffer(&data)) {
-          writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, data.batteryVoltage);
+          writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, 
+                            data.batteryVoltage);
         }
         outputFile.flush();
         if (Serial) {
@@ -275,7 +280,7 @@ void loop() {
     }
 
     if (samplingFlag) {
-      #if !BURST_SAMPLING_ONE_SAMPLE
+      #if !(BURST_SAMPLING && BURST_SAMPLING_ONE_SAMPLE)
         performSensorReading();
       #endif
       samplingFlag = false;
@@ -285,7 +290,8 @@ void loop() {
       DataPoint data;
       int writeCount = 0;
       while (readFromBuffer(&data) && writeCount < BUFFER_WRITE_COUNT) {
-        writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, data.batteryVoltage);
+        writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, 
+                          data.batteryVoltage);
         writeCount++;
         if (samplingFlag) {
           performSensorReading();
@@ -305,7 +311,8 @@ void loop() {
       }
     }
     // Finished writing to SD card, sleep until next sampling time or interrupt from timers/RTC
-    // When waking from burst sleep, this idle command mean the MCU will sleep until the next ms, then check the flag
+    // When waking from burst sleep, this idle command mean the MCU will sleep until the next ms, 
+    // then check the burst flag
     setForeverIdleSleep();
 }
 
@@ -319,13 +326,14 @@ void performSensorReading() {
       currentTemperature = newSensor.temperature();
       currentPressure = newSensor.pressure();
     #else
-      oldSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_2048, &currentPressure, &currentTemperature);
+      oldSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_2048, &currentPressure, 
+                                  &currentTemperature);
     #endif
 
   updateLedWarmupIndicator();
-    // Compute timestamp relative to last RTC tick without mutating global currentSecond
+    // Compute timestamp relative to last RTC tick without mutating global currentDateTime
     uint16_t millisec = millis() - millisAtInterrupt;
-    DateTime now = currentSecond;
+    DateTime now = currentDateTime;
     // while (millisec >= 1000) {
     //   millisec -= 1000;
     //   now = now + TimeSpan(1);
@@ -336,8 +344,9 @@ void performSensorReading() {
 
 float getBatteryVoltage() {
   int sensorValue = analogRead(BATTERY_VOLTAGE_PIN);
-  float batteryVoltage = (sensorValue * REFERENCE_VOLTAGE) / MAX_ADC_VALUE; // Adafruit docs says this should also multiply by 2?
-  float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER; // Adjust multiplier based on your divider
+  float batteryVoltage = (sensorValue * REFERENCE_VOLTAGE) / MAX_ADC_VALUE;
+  // Adjust multiplier based on your divider
+  float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER;
   return actualBatteryVoltage;
 }
 
@@ -348,28 +357,28 @@ float getBatteryVoltage() {
 void resetTimer() {
   power_adc_enable();
   millisAtInterrupt = millis();
-  currentSecond = rtc.now();
+  currentDateTime = rtc.now();
   if (Serial) {
     Serial.print(F("Reset timer at: "));
-    Serial.print(currentSecond.year());
+    Serial.print(currentDateTime.year());
     Serial.print('/');
-    Serial.print(currentSecond.month());
+    Serial.print(currentDateTime.month());
     Serial.print('/');
-    Serial.print(currentSecond.day());
+    Serial.print(currentDateTime.day());
     Serial.print(' ');
-    Serial.print(currentSecond.hour());
+    Serial.print(currentDateTime.hour());
     Serial.print(':');
-    Serial.print(currentSecond.minute());
+    Serial.print(currentDateTime.minute());
     Serial.print(':');
-    Serial.println(currentSecond.second());
+    Serial.println(currentDateTime.second());
   }
   #if BURST_SAMPLING
-    elapsed = currentSecond - timeAtBurstSwitch;
+    elapsed = currentDateTime - timeAtBurstSwitch;
   #endif
   currentVoltage = getBatteryVoltage();
-  #if !BURST_SAMPLING_ONE_SAMPLE
+  #if !(BURST_SAMPLING && BURST_SAMPLING_ONE_SAMPLE)
     rtc.clearAlarm(1);
-    rtc.setAlarm1(currentSecond + TimeSpan(1), DS3231_A1_PerSecond);
+    // rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
   #endif
   power_adc_disable();
 }
@@ -414,7 +423,8 @@ void setTimeStamp(uint16_t* date, uint16_t* time) {
   *time = FAT_TIME(now.hour(), now.minute(), now.second());
 }
 
-void writeToOutputFile(DateTime now, int millisec,float pressure, float temperature, float batteryVoltage) {
+void writeToOutputFile(DateTime now, int millisec, float pressure, 
+                       float temperature, float batteryVoltage) {
   // Write data to SD card
   outputFile.print(now.year());
   outputFile.print('/');
@@ -453,7 +463,8 @@ void writeToOutputFile(DateTime now, int millisec,float pressure, float temperat
 // CIRCULAR BUFFER FUNCTIONS
 // ===========================
 
-void addToBuffer(DateTime now, int millisec, float pressure, float temperature, float batteryVoltage) {
+void addToBuffer(DateTime now, int millisec, float pressure, float temperature, 
+                  float batteryVoltage) {
   if (bufferCount >= BUFFER_SIZE) {
     bufferTail = (bufferTail + 1) % BUFFER_SIZE;
   } else {
@@ -494,37 +505,58 @@ bool readFromBuffer(DataPoint* data) {
 // SLEEP MANAGEMENT
 // ===========================
 
-void deepSleepLog() {
-  deepSleepFlag = false;
-  DateTime now = rtc.now();
+
+// When time is set into the future, no sensor readings occur
+void delayStartDeepSleepLoop() {
   DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
+
+  // Configure RTC alarms
+  rtc.clearAlarm(1);
+  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
+  rtc.setAlarm1(startDateTime, DS3231_A1_Hour); // Alarm 1 triggers every day until start time
+
+  // Don't go to sleep if start time has already passed
+  DateTime now = rtc.now();
+
   if (now.unixtime() >= startDateTime.unixtime()) {
+    detachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN));
     rtc.clearAlarm(1);
-    rtc.clearAlarm(2);
-    rtc.disableAlarm(2);
-    // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
-    rtc.setAlarm1(now + TimeSpan(1), DS3231_A1_PerSecond);
-    #if BURST_SAMPLING
-      timeAtBurstSwitch = rtc.now();
-    #endif
-    #if !BURST_SAMPLING_ONE_SAMPLE
-      Timer1.initialize(SAMPLE_TIME);
-      Timer1.attachInterrupt(triggerSampling);
-      attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
-    #endif
-    millisAtInterrupt = millis();
-    // Now continue with regular program execution
-  } else {
+    return;
+  }
+  if (Serial) Serial.println(F("Entering delay deep sleep"));
+
+  // Loop until start date is reached
+  while (true) {
+    // ADC is OFF; ADC_ON setting prevents LowPower from turning it back on after waking up
+    LowPower.powerDown(SLEEP_FOREVER, ADC_ON, BOD_OFF);
+    delay(50);  // This delay allows MCU components to initialize upon wake-up
+    Wire.end(); // The delay, and restarting I2C isn't strictly necessary but qualitatively improves stability
+    Wire.begin();
+    Wire.setClock(TWI_CLOCK_SPEED);
+    // Device has woken up
+    now = rtc.now();
+    if (now.unixtime() >= startDateTime.unixtime()) {
+      detachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN));
+      rtc.clearAlarm(1);
+      return; // Exit loop and continue with setup()
+    }
+
+    digitalWrite(LED_PIN, HIGH);
+    delay(ERROR_BLINK_DELAY);
+    digitalWrite(LED_PIN, LOW);
+    
+    // Not yet at start date, log one sample and go back to sleep
     power_adc_enable();
     performSensorReading();
-    currentVoltage = getBatteryVoltage(); // Perform voltage reading after sensor reading to give ADC time to settle
+    // Perform voltage reading after sensor reading to give ADC time to settle
+    currentVoltage = getBatteryVoltage(); 
     power_adc_disable();
     DataPoint data;
     readFromBuffer(&data);
-    // Don't use batteryVoltage from buffer because it is old
-    writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, currentVoltage); 
+    // Don't use batteryVoltage or current date from buffer because it is not updated in deep sleep mode
+    writeToOutputFile(now, 0, data.pressure, data.temperature, currentVoltage);
     outputFile.flush();
-    enterDelayDeepSleep();
+    rtc.clearAlarm(1);
   }
 }
 
@@ -547,15 +579,12 @@ void enterBurstDeepSleep(DateTime endTime) {
   rtc.clearAlarm(1);
   DateTime now = rtc.now();
   if (now.unixtime() > endTime.unixtime() + sleepSeconds) {
-    // digitalWrite(LED_PIN, HIGH);
-    // delay(1000000UL);
-    // digitalWrite(LED_PIN, LOW);
     timeAtBurstSwitch = rtc.now();
     resetTimer();
-    attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING); // TODO: Should this run in single sample mode?
+    attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
     #if !BURST_SAMPLING_ONE_SAMPLE
       Timer1.initialize(SAMPLE_TIME);
-      Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
+      Timer1.attachInterrupt(triggerSampling);
     #endif
     burstSleepFlag = true;
     return;
@@ -571,7 +600,8 @@ void enterBurstDeepSleep(DateTime endTime) {
   rtc.setAlarm1(nextWake, DS3231_A1_Date);
   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), burstSleepInterrupt, FALLING);
 
-  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  // ADC is OFF; ADC_ON setting prevents LowPower from turning it back on after waking up
+  LowPower.powerDown(SLEEP_FOREVER, ADC_ON, BOD_OFF);
   delay(50);  // This delay is important to allow MCU components to initialize upon wake-up
   Wire.end();
   Wire.begin();
@@ -579,17 +609,18 @@ void enterBurstDeepSleep(DateTime endTime) {
   rtc.clearAlarm(1);
   timeAtBurstSwitch = rtc.now();
   resetTimer();
-  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING); // TODO: Should this run in single sample mode?
+  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
   #if !BURST_SAMPLING_ONE_SAMPLE
     Timer1.initialize(SAMPLE_TIME);
-    Timer1.attachInterrupt(triggerSampling); // Every time Timer1 finishes counting down, calls triggerSampling
+    Timer1.attachInterrupt(triggerSampling);
   #endif
 }
 
 void setForeverIdleSleep() {
-  // TODO: See if turning on SPI/TWI improves data loss
-  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer sleep, they are already off
-  LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, TWI_ON, USB_OFF);
+  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer 
+  // sleep, they are already off
+  LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, 
+                TWI_ON, USB_OFF);
 }
 
 // ===========================
@@ -680,7 +711,7 @@ void resetTimerInterrupt() {
 }
 
 void deepSleepInterrupt() {
-  deepSleepFlag = true;
+  // Do nothing
 }
 
 void burstSleepInterrupt() {
