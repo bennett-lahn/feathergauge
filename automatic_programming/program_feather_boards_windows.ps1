@@ -8,7 +8,7 @@
 #
 # Caution: this script overwrites the current arduino-cli config settings.
 #
-# Usage: .\program_feather_boards_windows.ps1 [-SkipRtc] [-Help]
+# Usage: .\program_feather_boards_windows.ps1 [-SkipRtc] [-Debug] [-Help]
 #        .\program_feather_boards_windows.ps1 -SketchDir <path> -OutputDir <path>
 
 # Next Steps:
@@ -28,6 +28,8 @@ param(
     [string]$LogFilePath  = "",
     # Skip RTC sync and EEPROM test; flash only the main sketch
     [switch]$SkipRtc,
+    # Print verbose output to the console (all output is always logged regardless)
+    [switch]$Debug,
     [switch]$Help
 )
 
@@ -66,6 +68,7 @@ $Script:LogFile = if ($LogFilePath) { $LogFilePath } else { Join-Path $LogsDir $
 # Seconds to wait for a serial response before timing out
 $SerialTimeout        = 15
 $SkipRtcSetup         = $SkipRtc.IsPresent
+$Script:DebugMode     = $Debug.IsPresent
 
 # Physical USB location path -> current COM port name.
 # Populated by Build-UsbPortMap after initial port detection, and kept
@@ -74,20 +77,26 @@ $Script:UsbPortMap = @{}
 
 # ---------------------------------------------------------------------------
 # Logging helpers
-# Write every message to both the console (coloured) and the log file.
+#
+# All messages are written to the log file regardless of -Debug.
+# Write-Detail is for verbose/internal messages that only appear on the
+# console when -Debug is passed. Write-Info/Success/Warn/Err always print.
 # ---------------------------------------------------------------------------
 
 function Write-LogLine {
-    param([string]$Level, [string]$Message, [string]$Color)
+    param([string]$Level, [string]$Message, [string]$Color, [switch]$DetailOnly)
     $line = "[$Level] $Message"
-    Write-Host $line -ForegroundColor $Color
     Add-Content -Path $Script:LogFile -Value $line
+    if (-not $DetailOnly -or $Script:DebugMode) {
+        Write-Host $line -ForegroundColor $Color
+    }
 }
 
 function Write-Info    { param([string]$m) Write-LogLine "INFO"    $m "Blue"   }
 function Write-Success { param([string]$m) Write-LogLine "SUCCESS" $m "Green"  }
 function Write-Warn    { param([string]$m) Write-LogLine "WARNING" $m "Yellow" }
 function Write-Err     { param([string]$m) Write-LogLine "ERROR"   $m "Red"    }
+function Write-Detail  { param([string]$m) Write-LogLine "INFO"    $m "Gray" -DetailOnly }
 
 # ---------------------------------------------------------------------------
 # Update-SessionPath
@@ -128,8 +137,10 @@ function Install-WingetPackage {
         return $false
     }
 
-    winget install --id $PackageId --accept-package-agreements --accept-source-agreements 2>&1 |
-        ForEach-Object { Write-Host $_ -ForegroundColor Gray }
+    $wingetOutput = winget install --id $PackageId --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
+    if ($Script:DebugMode) {
+        $wingetOutput | ForEach-Object { Write-Detail "$_" }
+    }
 
     Update-SessionPath
 
@@ -167,11 +178,11 @@ function Install-Dependencies {
 # using the arduino-cli library manager. Currently installs: SD.
 # ---------------------------------------------------------------------------
 function Install-CoreLibraries {
-    Write-Info "Ensuring core libraries are installed (SD)..."
+    Write-Detail "Ensuring core libraries are installed (SD)..."
     foreach ($lib in @("SD")) {
         arduino-cli lib install $lib 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Success "Library installed: $lib"
+            Write-Detail "Library installed: $lib"
         } else {
             Write-Warn "Failed to install library: $lib"
         }
@@ -188,11 +199,11 @@ function Install-CoreLibraries {
 # known-good versions are always used regardless of upstream changes.
 # ---------------------------------------------------------------------------
 function Install-LocalLibraries {
-    Write-Info "Installing local library zip files from: $LibraryConfigDir"
+    Write-Detail "Installing local library zip files from: $LibraryConfigDir"
 
     if (-not (Test-Path $LibraryConfigDir)) {
         Write-Warn "libraries\ directory not found: $LibraryConfigDir"
-        Write-Info "Create the directory and add .zip library archives to enable local installs"
+        Write-Detail "Create the directory and add .zip library archives to enable local installs"
         return
     }
 
@@ -203,13 +214,13 @@ function Install-LocalLibraries {
         return
     }
 
-    Write-Info "Found $($zips.Count) library zip(s) to install"
+    Write-Detail "Found $($zips.Count) library zip(s) to install"
 
     foreach ($zip in $zips) {
-        Write-Info "Installing library: $($zip.Name)"
+        Write-Detail "Installing library: $($zip.Name)"
         arduino-cli lib install --zip-path $zip.FullName 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Success "Installed: $($zip.Name)"
+            Write-Detail "Installed: $($zip.Name)"
         } else {
             Write-Warn "Failed to install: $($zip.Name)"
         }
@@ -234,11 +245,13 @@ function Setup-ArduinoCli {
         arduino-cli config init --overwrite
     }
 
-    arduino-cli config set board_manager.additional_urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
-    arduino-cli config set library.enable_unsafe_install true
-    arduino-cli core update-index
+    arduino-cli config set board_manager.additional_urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json 2>&1 | Out-Null
+    arduino-cli config set library.enable_unsafe_install true 2>&1 | Out-Null
+    $indexOutput = arduino-cli core update-index 2>&1
+    if ($Script:DebugMode) { $indexOutput | ForEach-Object { Write-Detail "$_" } }
     arduino-cli core install arduino:avr 2>&1 | Out-Null   # dependency of adafruit:avr
-    arduino-cli core install adafruit:avr
+    $coreOutput = arduino-cli core install adafruit:avr 2>&1
+    if ($Script:DebugMode) { $coreOutput | ForEach-Object { Write-Detail "$_" } }
 
     Install-CoreLibraries
     Install-LocalLibraries
@@ -254,10 +267,10 @@ function Setup-ArduinoCli {
 #   - libraries\          inside the main sketch folder (arduino-cli expects it)
 # ---------------------------------------------------------------------------
 function New-DirectoryStructure {
-    Write-Info "Creating directory structure..."
+    Write-Detail "Creating directory structure..."
     New-Item -ItemType Directory -Path $CompiledSketchDir -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $ArduinoSketchDir "libraries") -Force | Out-Null
-    Write-Success "Directory structure created"
+    Write-Detail "Directory structure created"
 }
 
 # ---------------------------------------------------------------------------
@@ -286,11 +299,14 @@ function Invoke-CompileSketch {
         return $false
     }
 
-    arduino-cli compile --fqbn $BoardFqbn --output-dir $CompiledSketchDir $SketchPath
+    $compileOutput = arduino-cli compile --fqbn $BoardFqbn --output-dir $CompiledSketchDir $SketchPath 2>&1
+    if ($Script:DebugMode) {
+        $compileOutput | ForEach-Object { Write-Detail "$_" }
+    }
 
     if ($LASTEXITCODE -eq 0) {
         Write-Success "$Label sketch compiled successfully"
-        Write-Info "Compiled binary: $(Join-Path $CompiledSketchDir "$SketchFile.hex")"
+        Write-Detail "Compiled binary: $(Join-Path $CompiledSketchDir "$SketchFile.hex")"
         return $true
     }
 
@@ -311,7 +327,7 @@ function Invoke-CompileSketch {
 # subsystem. Returns the populated hashtable (locationPath -> comPort).
 # ---------------------------------------------------------------------------
 function Build-UsbPortMap {
-    Write-Info "Scanning PnP for Adafruit devices (VID 239A)..."
+    Write-Detail "Scanning PnP for Adafruit devices (VID 239A)..."
     $map = @{}
 
     $devices = Get-PnpDevice -Class "Ports" -Status "OK" -ErrorAction SilentlyContinue |
@@ -331,7 +347,7 @@ function Build-UsbPortMap {
             # Remove composite device suffix from location path if it exists
             $locationPath = $locationPath -replace '#USBMI\(\d+\)', ''
             $map[$locationPath] = $comPort
-            Write-Info "  $comPort -> $locationPath"
+            Write-Detail "  $comPort -> $locationPath"
         } else {
             Write-Warn "Could not read location path for $comPort - it will not be trackable after reset"
         }
@@ -339,6 +355,32 @@ function Build-UsbPortMap {
 
     Write-Success "Found $($map.Count) Adafruit device(s)"
     return $map
+}
+
+# ---------------------------------------------------------------------------
+# Get-DeviceProductId
+#
+# Returns the USB product ID (PID) string for the Adafruit device currently
+# mapped to $Port, extracted from the device's HardwareID (e.g. "800C").
+# Returns $null if the device is not found or has no parseable PID field.
+# ---------------------------------------------------------------------------
+function Get-DeviceProductId {
+    param([string]$Port)
+
+    $device = Get-PnpDevice -Class "Ports" -Status "OK" -ErrorAction SilentlyContinue |
+        Where-Object { $_.HardwareID -match "VID_239A" -and $_.FriendlyName -match "\($Port\)" } |
+        Select-Object -First 1
+
+    if (-not $device) { return $null }
+
+    $hwIdWithPid = $device.HardwareID |
+        Where-Object { $_ -match "PID_([0-9A-Fa-f]+)" } |
+        Select-Object -First 1
+
+    if ($hwIdWithPid -and $hwIdWithPid -match "PID_([0-9A-Fa-f]+)") {
+        return $Matches[1].ToUpper()
+    }
+    return $null
 }
 
 # ---------------------------------------------------------------------------
@@ -354,9 +396,9 @@ function Build-UsbPortMap {
 function Invoke-BootloaderReset {
     param([string]$Port)
 
-    Write-Info "Triggering 1200-baud bootloader reset on $Port..."
+    Write-Detail "Triggering 1200-baud bootloader reset on $Port..."
     try {
-        Write-Info "  Opening SerialPort: [$Port] at 1200 baud"
+        Write-Detail "  Opening SerialPort: [$Port] at 1200 baud"
         $sp = New-Object System.IO.Ports.SerialPort($Port, 1200)
         $sp.Open()
         $sp.DtrEnable = $false   # DTR low signals the sketch to enter bootloader
@@ -374,11 +416,16 @@ function Wait-ForPortAtLocation {
     param(
         [Parameter(Mandatory=$true)]
         [string]$TargetLocationPath,
-        
+
+        # When set, any device at the target location whose PID matches this
+        # value is skipped. Pass the PID captured before the triggering reset
+        # so that the function ignores the device that was already present and
+        # only returns once a genuinely new enumeration has appeared.
+        [string]$ExcludeProductId = $null,
+
         [int]$TimeoutSeconds = 5,
         [int]$PollIntervalMs = 500
     )
-
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
@@ -405,6 +452,20 @@ function Wait-ForPortAtLocation {
                 if ($matchFound) {
                     if ($dev.FriendlyName -match '\((COM\d+)\)') {
                         $comPort = $Matches[1]
+
+                        # If a pre-reset PID was supplied, skip the device if
+                        # its PID has not changed - it has not yet re-enumerated
+                        # as a different device.
+                        if ($ExcludeProductId) {
+                            $hwIdWithPid = $dev.HardwareID |
+                                Where-Object { $_ -match "PID_([0-9A-Fa-f]+)" } |
+                                Select-Object -First 1
+                            if ($hwIdWithPid -and $hwIdWithPid -match "PID_([0-9A-Fa-f]+)") {
+                                $devPid = $Matches[1].ToUpper()
+                                if ($devPid -eq $ExcludeProductId.ToUpper()) { continue }
+                            }
+                        }
+
                         # Update the global map so the new port is tracked
                         $Script:UsbPortMap[$TargetLocationPath] = $comPort
                         $stopwatch.Stop()
@@ -453,7 +514,7 @@ function Invoke-ProgramBoard {
        ,[int]   $BoardNum
     )
 
-    Write-Info "Programming board $BoardNum on $Port..."
+    Write-Detail "Programming board $BoardNum on $Port..."
 
     # --- Step 1: resolve physical location so we can track the board after reset ---
     $locationPath = $Script:UsbPortMap.Keys |
@@ -466,21 +527,35 @@ function Invoke-ProgramBoard {
     }
 
     # --- Step 2: trigger reset and wait for bootloader port ---
+    # Save the sketch-mode PID now so Wait-ForPortAtLocation can reject the
+    # device if it has not yet transitioned to a different (bootloader) PID.
+    $sketchPid = Get-DeviceProductId $Port
+    if ($sketchPid) { Write-Detail "  Sketch product ID (pre-reset): $sketchPid" }
+
     if (-not (Invoke-BootloaderReset $Port)) { return $null }
 
-    Write-Info "Waiting for bootloader to enumerate at location $locationPath..."
-    $bootloaderPort = Wait-ForPortAtLocation -TargetLocationPath $locationPath
+    Write-Detail "Waiting for bootloader to enumerate at location $locationPath..."
+    $bootloaderPort = Wait-ForPortAtLocation -TargetLocationPath $locationPath `
+                          -ExcludeProductId $sketchPid
     if (-not $bootloaderPort) {
         Write-Err "Bootloader did not enumerate for board $BoardNum"
         return $null
     }
-    Write-Info "Bootloader detected on $bootloaderPort - flashing..."
+    Write-Detail "Bootloader detected on $bootloaderPort - flashing..."
+
+    # Save the bootloader PID so the post-flash wait can reject the bootloader
+    # device and only return once the sketch-mode device has enumerated.
+    $bootloaderPid = Get-DeviceProductId $bootloaderPort
+    if ($bootloaderPid) { Write-Detail "  Bootloader product ID: $bootloaderPid" }
 
     # --- Step 3: flash via avrdude ---
     # -C points avrdude at its own config so programmer definitions are always found
-    # \\.\COMx notation is required for COM10+ on Windows; harmless for COM1-COM9
+    # \\.\COMx notation is required for COM10+ on Windows
     $avrdudeConf = Join-Path $ScriptDir "avrdude.conf"
-    avrdude -p atmega32u4 -c avr109 -P "\\.\$bootloaderPort" -b 57600 -D -U "flash:w:${HexFile}:i"
+    $avrOutput = avrdude -p atmega32u4 -c avr109 -P "\\.\$bootloaderPort" -b 57600 -D -U "flash:w:${HexFile}:i" 2>&1
+    if ($Script:DebugMode) {
+        $avrOutput | ForEach-Object { Write-Detail "$_" }
+    }
 
     if ($LASTEXITCODE -ne 0) {
         Write-Err "avrdude failed for board $BoardNum"
@@ -488,9 +563,10 @@ function Invoke-ProgramBoard {
     }
 
     # Wait for the sketch to enumerate (board resets after programming)
-    Write-Info "Waiting for sketch to enumerate at location $locationPath..."
+    Write-Detail "Waiting for sketch to enumerate at location $locationPath..."
     Start-Sleep -Seconds 2    # give time for arduino to exit bootloader and enumerate
-    $sketchPort = Wait-ForPortAtLocation -TargetLocationPath $locationPath
+    $sketchPort = Wait-ForPortAtLocation -TargetLocationPath $locationPath `
+                      -ExcludeProductId $bootloaderPid
     if (-not $sketchPort) {
         Write-Warn "Board $BoardNum did not re-enumerate after flash - serial comms may fail"
         $sketchPort = $bootloaderPort   # best-effort fallback
@@ -510,16 +586,15 @@ function Invoke-ProgramBoard {
 function Send-TimeViaSerial {
     param([string]$Port)
 
-    Write-Info "Sending time to ${Port}: $TimeString"
+    Write-Detail "Sending time via serial to $Port..."
 
     try {
-        Write-Info "  Opening SerialPort: [$Port] at 57600 baud"
+        Write-Detail "  Opening SerialPort: [$Port] at 57600 baud"
         $sp = New-Object System.IO.Ports.SerialPort($Port, 57600)
         $sp.NewLine      = "`n"
         $sp.ReadTimeout  = 500
         $sp.WriteTimeout = 2000
 
-        # CRITICAL: Assert DTR so the 32u4 breaks out of `while(!Serial)`
         $sp.DtrEnable = $true
 
         $sp.Open()
@@ -527,28 +602,31 @@ function Send-TimeViaSerial {
         # Wait for the Arduino to finish booting and dump its initial prints
         Start-Sleep -Seconds 2    
 
-        # CRITICAL: Instantly drain the buffer of any startup messages
+        # Drain the buffer of any startup messages
         $startupText = $sp.ReadExisting()
         if ($startupText) {
-            # Log it on one line for cleanliness
             $cleanText = $startupText.Trim() -replace '`r?`n', ' | '
-            Write-Info "[ARDUINO STARTUP] $cleanText"
+            Write-Detail "[ARDUINO STARTUP] $cleanText"
         }
 
-        $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        Write-Info "Current system time: $currentTime"
+        # Sleep until start of next second (precision: +/- 15ms)
+        $now = Get-Date
+        $msRemaining = 1000 - $now.Millisecond
+        Start-Sleep -Milliseconds $msRemaining
 
-        # Send the payload
+        $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $currentTimeMs = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+        Write-Detail "Current system time (w/ ms): $currentTimeMs"
+
         $bytes = [System.Text.Encoding]::ASCII.GetBytes($currentTime + "`n")
         $sp.Write($bytes, 0, $bytes.Length)
 
-        # Wait for the acknowledgment
         $deadline = (Get-Date).AddSeconds(15) # Assuming 15s global timeout
         
         while ((Get-Date) -lt $deadline) {
             try {
                 $line = $sp.ReadLine().Trim()
-                Write-Info "[ARDUINO] $line"
+                Write-Detail "[ARDUINO] $line"
 
                 if ($line -match '^SUCCESS') { 
                     $sp.Close(); $sp.Dispose()
@@ -588,12 +666,12 @@ function Send-TimeViaSerial {
 function Read-AndValidateEepromSerial {
     param([string]$Port)
 
-    Write-Info "Reading EEPROM serial value from $Port"
+    Write-Detail "Reading EEPROM serial value from $Port"
 
     $prefix = "Read serial number from EEPROM: "
 
     try {
-        Write-Info "  Opening SerialPort: [$Port] at 57600 baud"
+        Write-Detail "  Opening SerialPort: [$Port] at 57600 baud"
         $sp = New-Object System.IO.Ports.SerialPort($Port, 57600)
         $sp.NewLine     = "`n"
         $sp.ReadTimeout = 500
@@ -606,7 +684,7 @@ function Read-AndValidateEepromSerial {
         while ((Get-Date) -lt $deadline) {
             try {
                 $line = $sp.ReadLine().Trim()
-                Write-Info "[ARDUINO] $line"
+                Write-Detail "[ARDUINO] $line"
                 if ($line.StartsWith($prefix)) {
                     $eepromValue = $line.Substring($prefix.Length).Trim()
                     break
@@ -644,7 +722,7 @@ function Test-EepromOnBoard {
     param([string]$Port, [int]$BoardNum)
 
     $location = $Script:UsbPortMap.GetEnumerator() | Where-Object { $_.Value -eq $Port } | Select-Object -ExpandProperty Name
-    Write-Info "Testing EEPROM on board $BoardNum on $Port (location: $location)..."
+    Write-Detail "Testing EEPROM on board $BoardNum on $Port (location: $location)..."
 
     $eepromHex  = Join-Path $CompiledSketchDir "eeprom_test.ino.hex"
     $currentPort = Invoke-ProgramBoard $Port $eepromHex $BoardNum
@@ -673,7 +751,7 @@ function Test-EepromOnBoard {
 function Setup-RtcBoard {
     param([string]$Port, [int]$BoardNum)
 
-    Write-Info "Setting up RTC on board $BoardNum on $Port..."
+    Write-Detail "Setting up RTC on board $BoardNum on $Port..."
 
     $rtcHex      = Join-Path $CompiledSketchDir "rtc_setup.ino.hex"
     $currentPort = Invoke-ProgramBoard $Port $rtcHex $BoardNum
@@ -713,7 +791,7 @@ function Invoke-ProgramBoards {
         Write-Info "Starting simple programming for $totalCount board(s) (RTC/EEPROM skipped)..."
     } else {
         Write-Info "Starting three-stage programming for $totalCount board(s)..."
-        Write-Info "Stage 0: EEPROM test  |  Stage 1: RTC setup  |  Stage 2: Main program"
+        Write-Detail "Stage 0: EEPROM test  |  Stage 1: RTC setup  |  Stage 2: Main program"
     }
 
     for ($i = 0; $i -lt $Ports.Count; $i++) {
@@ -776,6 +854,7 @@ function Show-Usage {
     Write-Host "  -OutputDir  <path>       Compiled binary output directory (default: automatic_programming\compiled_sketches)" -ForegroundColor White
     Write-Host "  -LogFilePath <path>      Log file path (default: automatic_programming\programming_log_<timestamp>.log)" -ForegroundColor White
     Write-Host "  -SkipRtc                 Skip EEPROM test and RTC sync; flash main sketch only" -ForegroundColor White
+    Write-Host "  -Debug                   Print verbose output to the console (full output is always logged)" -ForegroundColor White
     Write-Host ""
     Write-Host "Expected project layout (relative to the repository root):" -ForegroundColor Yellow
     Write-Host "  Sketchbooks\feathergauge_code\feathergauge_code.ino  (main firmware)" -ForegroundColor White
@@ -812,8 +891,8 @@ function Main {
         exit 0
     }
 
-    Write-Host "Feather 32u4 Multi-Board Programming Script (Windows)" -ForegroundColor Cyan
-    Write-Host "======================================================" -ForegroundColor Cyan
+    Write-Host "Feather 32u4 Multi-Board Programming Script (Windows)" -ForegroundColor Blue
+    Write-Host "======================================================" -ForegroundColor Blue
     Write-Info "Log file: $($Script:LogFile)"
 
     if (-not (Install-Dependencies)) {
@@ -829,7 +908,7 @@ function Main {
         Write-Info "Skipping RTC setup - compiling main sketch only"
         if (-not (Invoke-CompileSketch $ArduinoSketchDir "feathergauge_code.ino" "main")) { exit 1 }
     } else {
-        Write-Info "Three-stage programming enabled - compiling EEPROM test, RTC setup, and main sketches"
+        Write-Detail "Three-stage programming enabled - compiling EEPROM test, RTC setup, and main sketches"
         if (-not (Invoke-CompileSketch $EepromTestSketchDir "eeprom_test.ino"       "EEPROM test")) { exit 1 }
         if (-not (Invoke-CompileSketch $RtcSetupSketchDir   "rtc_setup.ino"         "RTC setup"))   { exit 1 }
         if (-not (Invoke-CompileSketch $ArduinoSketchDir    "feathergauge_code.ino" "main"))        { exit 1 }
