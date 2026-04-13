@@ -48,32 +48,18 @@ Data is logged to an onboard microSD card in CSV format for easy post-processing
 
 - **Low Cost**: Economical alternative to commercial wave gauges
 - **Flexible Sampling**: Supports continuous and burst sampling modes
-- **Autonomous Operation**: Battery-powered with long deployment durations, up to several months
-- **Real-Time Clock**: Accurate timestamping with RTC module
+- **Autonomous Operation**: Battery-powered with long deployment durations up to several months
+- **Real-Time Clock**: Accurate timekeeping over many months with RTC module
 - **Configurable**: User-adjustable sampling rates and burst parameters
 
 ---
 
-## Repository Structure
-
-```
-feathergauge/
-├── Sketchbooks/
-│   ├── feathergauge_code/     # Primary data logging firmware
-│   ├── rtc_setup/             # Real-time clock setup utility
-│   └── serial_number_generator/ # Tool to flash device identification number
-├── analysis_scripts/          # Python scripts for data quality analysis
-├── automatic_programming/     # Batch programming scripts and tools
-├── build_info/                # Hardware assembly documentation & CAD files
-└── libraries/                 # Required Arduino libraries (ZIP files)
-```
-
 ### Key Components
 
-- **`Sketchbooks/feathergauge_code/`**: The primary Arduino sketch for data logging. Configure sampling parameters here before uploading.
-- **`Sketchbooks/rtc_setup/`**: Required utility to synchronize the real-time clock before use.
+- **`Sketchbooks/feathergauge_code/`**: The primary Arduino sketch for data logging. Configure sampling parameters in `user_config.h` before uploading.
+- **`Sketchbooks/rtc_setup/`**: Required utility to synchronize the real-time clock before use (unless using automatic programming).
 - **`libraries/`**: All necessary Arduino libraries packaged as ZIP files.
-- **`automatic_programming/`**: Tools for programming multiple wave gauges efficiently (Windows and Linux).
+- **`automatic_programming/`**: Tools for programming multiple wave gauges efficiently (Windows only).
 - **`build_info/`**: Hardware assembly guide, bill of materials, and 3D models for internal components.
 
 
@@ -85,9 +71,9 @@ feathergauge/
 
 ### Target Hardware
 - **Microcontroller**: Adafruit Feather 32u4 Adalogger
-- **Pressure Sensor**: SparkFun MS5803, Blue Robotics Bar02 or equivalent MS5837-02BA
+- **Pressure Sensor**: SparkFun MS5803-14BA
 - **Storage**: MicroSD card (8GB recommended, large capacity cards may not work correctly)
-- **RTC**: DS3231 Real-time clock, connected to microcontroller using SPI
+- **RTC**: DS3231 Real-time clock, connected to microcontroller using I2C
 
 
 ## Getting Started
@@ -114,7 +100,7 @@ feathergauge/
 
 ### 2. Library Setup
 
-1. Download this entire repository as a ZIP file (**Code → Download ZIP**)
+1. Download this repository as a ZIP file (**Code → Download ZIP**)
 2. Extract to a location on your local hard drive
 3. In Arduino IDE, navigate to **Sketch → Include Library → Add .ZIP Library...**
 4. Navigate to the `libraries/` folder in the extracted repository
@@ -125,7 +111,7 @@ feathergauge/
    - `SD-master.zip`
    - `TimerOne-<version>.zip`
 
-> **Troubleshooting**: If you see compilation errors like `xxx.h: No such file or directory`, close and reopen Arduino IDE after installing each library.
+> **Troubleshooting**: If you see compilation errors like `xxx.h: No such file or directory`, close and reopen Arduino IDE after installing libraries.
 
 ### 3. Arduino IDE Configuration
 
@@ -158,18 +144,16 @@ The RTC must be set for proper timestamping. This is a one-time setup unless the
 
 ### 5. Uploading Main Code
 
-> **Critical**: Follow this sequence exactly for proper operation.
-
 1. Ensure the device is powered off (no USB, no battery)
 2. Insert microSD card into SD card slot
 3. Connect battery (if applicable)
 4. Connect USB cable to computer
 5. Open `Sketchbooks/feathergauge_code/feathergauge_code.ino`
-6. Configure sampling parameters (see [Configuration Options](#configuration-options))
+6. Configure sampling parameters in `user_config.h` (see [Configuration Options](#configuration-options))
 7. Click **Upload**
-   - If upload hangs, press the **reset button** when "Waiting for upload port" appears
+   - If upload hangs, press the **reset button** immediately after clicking upload to enter the bootloader.
 8. Once upload completes, disconnect USB cable
-9. The red LED will flash **1-6 times** then stop, indicating successful startup
+9. The red LED will flash **1-6 times** then stop, indicating successful startup.
 
 > **⚠️ Error**: Continuously flashing LED indicates a fatal error. See [LED Status Indicators](#led-status-indicators).
 
@@ -177,7 +161,7 @@ The RTC must be set for proper timestamping. This is a one-time setup unless the
 
 ## Configuration Options
 
-Edit lines 1-50 of `feathergauge_code.ino` before uploading to configure sampling behavior:
+Edit `user_config.h` before uploading to configure sampling behavior:
 
 ### Continuous Sampling Mode
 ```cpp
@@ -207,8 +191,6 @@ sleepSeconds = 120;
 DELAY_START = false;
 ```
 
-> **⚠️ Note**: `DELAY_START` is currently unsupported. Always set to `false`.
-
 **Battery Life Considerations:**
 - Higher sampling frequencies reduce battery life
 - Burst sampling with longer sleep intervals extends battery life
@@ -221,7 +203,7 @@ DELAY_START = false;
 The gauge starts automatically after uploading code (see step 5 above).
 
 **Restarting After Battery Disconnect:**
-Plug in the battery. If the gauge starts successfully, you will see 1-6 LED flashes, just as when the wave gauge was programmed.
+Plug in the battery. If the gauge starts successfully, you will see 1-6 LED flashes, just like when the wave gauge was programmed.
 
 ## Data Format
 
@@ -279,7 +261,7 @@ Figure 1. Deployment Guidance for Pressure Attenuation with Depth
 | Configuration | Battery Capacity | Estimated Life |
 |--------------|------------------|----------------|
 | Single sample burst (2 min interval) | 4400 mAh | ~2 months |
-| Single sample burst (2 min interval) | 10500 mAh | >3 months |
+| Single sample burst (2 min interval) | 10200 mAh | >3 months |
 | 16 Hz continuous sampling | 4400 mAh | ~3 weeks |
 | 16 Hz continuous sampling | 10500 mAh | >1 month |
 
@@ -304,7 +286,7 @@ Figure 1. Deployment Guidance for Pressure Attenuation with Depth
 ## Troubleshooting
 
 ### Board Not Recognized by Arduino IDE
-- **Cause**: Using power-only USB cable
+- **Cause**: Using power-only micro-USB cable
 - **Solution**: Use a data+power micro-USB cable. Check Device Manager (Windows) for COM port.
 
 ### Date/Time Incorrect
@@ -330,15 +312,11 @@ Figure 1. Deployment Guidance for Pressure Attenuation with Depth
    - Verify all parameters in lines 1-50 are set correctly
    - Ensure `DELAY_START = false`
 
-### Values Don't Make Sense
+### Sensor Values Don't Make Sense
 1. **Check wiring**: Ensure SCL and SDA are not reversed
-2. **Test sensor directly**:
-   - Open **File → Examples → BlueRobotics MS5837 Library → MS5837_example**
-   - Change `sensor.setModel(MS5837::MS5837_30BA);` to `sensor.setModel(MS5837::MS5837_02BA);`
-   - Open Serial Monitor to verify readings
 
-### Upload Hangs on "Waiting for upload port"
-- Press the small black reset button on the board when this message appears
+### Upload Hangs or fails"
+- Press the small black reset button on the board immediately after clicking "Upload".
 - This forces the board into bootloader mode
 
 ---
