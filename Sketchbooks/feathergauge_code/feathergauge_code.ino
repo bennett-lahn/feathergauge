@@ -164,8 +164,8 @@ void setup() {
       Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
       Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
       Serial.println(timeAtBurstSwitch.second());
-      Serial.print(F("[BURST] writeSeconds=")); Serial.print(writeSeconds);
-      Serial.print(F(", sleepSeconds=")); Serial.println(sleepSeconds);
+      Serial.print(F("[BURST] WRITE_SECONDS=")); Serial.print(WRITE_SECONDS);
+      Serial.print(F(", SLEEP_SECONDS=")); Serial.println(SLEEP_SECONDS);
     }
   #endif
 }
@@ -191,7 +191,7 @@ void loop() {
           Serial.println(timeAtBurstSwitch.second());
         }
         burstSleepFlag = false;
-      } else if (elapsed.totalseconds() > writeSeconds || BURST_SAMPLING_ONE_SAMPLE) {
+      } else if (elapsed.totalseconds() > WRITE_SECONDS || BURST_SAMPLING_ONE_SAMPLE) {
         #if BURST_SAMPLING_ONE_SAMPLE
           performSensorReading();
         #endif
@@ -442,7 +442,7 @@ bool readFromBuffer(DataPoint* data) {
 
 // When time is set into the future, no sensor readings occur
 void delayStartDeepSleepLoop() {
-  DateTime startDateTime(startYear, startMonth, startDay, startHour, startMinute, 0);
+  DateTime startDateTime(START_YEAR, START_MONTH, START_DAY, START_HOUR, START_MINUTE, 0);
 
   // Configure RTC alarms
   rtc.clearAlarm(1);
@@ -497,7 +497,7 @@ void delayStartDeepSleepLoop() {
 void enterBurstDeepSleep(DateTime endTime) {
   rtc.clearAlarm(1);
   DateTime now = rtc.now();
-  if (now.unixtime() > endTime.unixtime() + sleepSeconds) {
+  if (now.unixtime() > endTime.unixtime() + SLEEP_SECONDS) {
     timeAtBurstSwitch = rtc.now();
     resetTimer();
     attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
@@ -508,7 +508,7 @@ void enterBurstDeepSleep(DateTime endTime) {
     burstSleepFlag = true;
     return;
   }
-  DateTime nextWake(endTime + TimeSpan(sleepSeconds));
+  DateTime nextWake(endTime + TimeSpan(SLEEP_SECONDS));
   if (Serial) {
     Serial.print(F("[BURST] Next wake scheduled at "));
     Serial.print(nextWake.hour()); Serial.print(':');
@@ -572,7 +572,7 @@ void configureLedWarmupIndicator() {
   uint8_t flashCount = LED_WARMUP_DEFAULT_FLASHES;
   bool useManualPulse = false;
   #if BURST_SAMPLING
-    uint32_t availableReadings = (uint32_t)writeSeconds * (uint32_t)SAMPLE_FREQ;
+    uint32_t availableReadings = WRITE_SECONDS * (uint32_t)SAMPLE_FREQ;
     // Calculate # of flashes that fit within first sampling window
     while (flashCount > 1 && ((uint32_t)flashCount * 2) > availableReadings) {
       flashCount /= 2;

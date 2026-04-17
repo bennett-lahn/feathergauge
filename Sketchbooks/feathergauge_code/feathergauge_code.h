@@ -12,9 +12,14 @@
 #include <SD.h>
 #include <EEPROM.h>
 #include <avr/power.h>
-#include <RTClib.h>
 #include <TimerOne.h>
 #include <LowPower.h>
+
+// INTERNAL WARNING - Ignore before January 1st, 2037
+// RTClib uses a 32-bit variable to track time. After January 19th 2038, this value will overflow
+// and the library will have to be updated to use 64-bit variables for correct operation.
+// I am happy this code is still being used in 2038. :) 
+#include <RTClib.h>
 
 #if USE_NEW_SENSOR
   #include "MS5837.h"
