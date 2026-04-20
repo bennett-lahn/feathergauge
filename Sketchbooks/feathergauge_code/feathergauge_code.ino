@@ -30,8 +30,6 @@ float currentVoltage;       // Voltage of battery, updated every second
 // Sampling flag for ISR to main loop communication
 volatile bool samplingFlag   = false;
 volatile bool resetTimerFlag = false;
-volatile bool burstSleepFlag = false;
-volatile bool sleeping       = false;
 
 // Number of milliseconds at last 1 Hz interrupt from RTC
 unsigned long millisAtInterrupt = 0; 
@@ -55,8 +53,10 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   configureLedWarmupIndicator();
   Serial.end();
-  // Serial.begin(SERIAL_BAUD_RATE);  // Commented out to prevent blocking when USB disconnected
-  // while (!Serial);                 // Commented to prevent blocking when USB disconnected 
+  // Enabling serial port communication fundamentally breaks RTC timer interrupts (core function)
+  // It can be a useful debugging tool, but you should expect the program to behave incorrectly if enabled
+  // Serial.begin(SERIAL_BAUD_RATE);
+  // while (!Serial);
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
 
@@ -75,28 +75,28 @@ void setup() {
   rtc.writeSqwPinMode(DS3231_OFF);
 
   if (rtc.lostPower()) {
-        // This will adjust to the date and time at compilation; recompile everytime MCU is 
-        // flashed for accuracy. If the DS3231 has had continous MCU/button battery power since 
-        // last program flash, the time will not be changed.
+    // This will adjust to the date and time at compilation; recompile everytime MCU is 
+    // flashed for accuracy. If the DS3231 has had continous MCU/button battery power since 
+    // last program flash, the time will not be changed.
 
-        // **Relying on this to set the correct time is a bad idea**, but it's better than 
-        // no date at all
-        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-        if (Serial) {
-          DateTime setTime = rtc.now();
-          Serial.print(F("RTC time set to: "));
-          Serial.print(setTime.year());
-          Serial.print('/');
-          Serial.print(setTime.month());
-          Serial.print('/');
-          Serial.print(setTime.day());
-          Serial.print(' ');
-          Serial.print(setTime.hour());
-          Serial.print(':');
-          Serial.print(setTime.minute());
-          Serial.print(':');
-          Serial.println(setTime.second());
-        }
+    // **Relying on this to set the correct time is a bad idea**, but it's better than 
+    // no date at all
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    if (Serial) {
+      DateTime setTime = rtc.now();
+      Serial.print(F("RTC time set to: "));
+      Serial.print(setTime.year());
+      Serial.print('/');
+      Serial.print(setTime.month());
+      Serial.print('/');
+      Serial.print(setTime.day());
+      Serial.print(' ');
+      Serial.print(setTime.hour());
+      Serial.print(':');
+      Serial.print(setTime.minute());
+      Serial.print(':');
+      Serial.println(setTime.second());
+    }
   }
   
   pressureSensor.reset();
@@ -124,7 +124,8 @@ void setup() {
   if (outputFile) {
     if (Serial) Serial.println(F("File opened"));
     char serialNumber[16];
-    EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
+    EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber); 
+    if (Serial) Serial.println(F("Read EEPROM"));
     outputFile.print(F("W.G. Num: "));
     outputFile.print(serialNumber);
     outputFile.print(',');
@@ -177,21 +178,7 @@ void setup() {
 void loop() {
     #if BURST_SAMPLING
       // If true, write time ended; write to SD card and sleep
-      if (burstSleepFlag) {
-        timeAtBurstSwitch = rtc.now();
-        #if !BURST_SAMPLING_ONE_SAMPLE
-          Timer1.stop();
-          attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
-        #endif
-        resetTimer();
-        if (Serial) {
-          Serial.print(F("[BURST] Wake -> start write window at "));
-          Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
-          Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
-          Serial.println(timeAtBurstSwitch.second());
-        }
-        burstSleepFlag = false;
-      } else if (elapsed.totalseconds() > WRITE_SECONDS || BURST_SAMPLING_ONE_SAMPLE) {
+      if (elapsed.totalseconds() > WRITE_SECONDS || BURST_SAMPLING_ONE_SAMPLE) {
         #if BURST_SAMPLING_ONE_SAMPLE
           performSensorReading();
         #endif
@@ -226,7 +213,7 @@ void loop() {
       samplingFlag = false;
     }
 
-    if (bufferCount > BUFFER_WRITE_COUNT - 1) {
+    if (bufferCount == BUFFER_WRITE_COUNT) {
       DataPoint data;
       int writeCount = 0;
       while (readFromBuffer(&data) && writeCount < BUFFER_WRITE_COUNT) {
@@ -260,20 +247,19 @@ void loop() {
 // DATA ACQUISITION FUNCTIONS
 // ===========================
 void performSensorReading() {
-    float currentTemperature, currentPressure;
-    pressureSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_2048, &currentPressure, 
-                                  &currentTemperature);
+  float currentTemperature, currentPressure;
+  pressureSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_2048, &currentPressure, 
+                                &currentTemperature);
 
   updateLedWarmupIndicator();
-    // Compute timestamp relative to last RTC tick without mutating global currentDateTime
-    uint16_t millisec = millis() - millisAtInterrupt;
-    DateTime now = currentDateTime;
-    // while (millisec >= 1000) {
-    //   millisec -= 1000;
-    //   now = now + TimeSpan(1);
-    // }
+  uint16_t millisec = millis() - millisAtInterrupt;
+  // This eliminates 99% of rare cares where the millisecond timer and RTC are exactly in sync, 
+  // while maintaining an error of +/- 1ms
+  // An overflow more than 1000 is untouched so it can be discarded in postprocessing
+  millisec = (millisec == 1000) ? 999 : millisec;
+  DateTime now = currentDateTime;
 
-    addToBuffer(now, millisec, currentPressure, currentTemperature, currentVoltage);
+  addToBuffer(now, millisec, currentPressure, currentTemperature, currentVoltage);
 }
 
 float getBatteryVoltage() {
@@ -290,7 +276,7 @@ float getBatteryVoltage() {
 
 void resetTimer() {
   power_adc_enable();
-  millisAtInterrupt = millis();
+  // millisAtInterrupt = millis();
   currentDateTime = rtc.now();
   if (Serial) {
     Serial.print(F("Reset timer at: "));
@@ -475,9 +461,9 @@ void delayStartDeepSleepLoop() {
       return; // Exit loop and continue with setup()
     }
 
-    digitalWrite(LED_PIN, HIGH);
-    delay(ERROR_BLINK_DELAY);
-    digitalWrite(LED_PIN, LOW);
+    // digitalWrite(LED_PIN, HIGH);
+    // delay(ERROR_BLINK_DELAY);
+    // digitalWrite(LED_PIN, LOW);
     
     // Not yet at start date, log one sample and go back to sleep
     power_adc_enable();
@@ -498,14 +484,15 @@ void enterBurstDeepSleep(DateTime endTime) {
   rtc.clearAlarm(1);
   DateTime now = rtc.now();
   if (now.unixtime() > endTime.unixtime() + SLEEP_SECONDS) {
-    timeAtBurstSwitch = rtc.now();
+    timeAtBurstSwitch = now;
     resetTimer();
+    rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
     attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
     #if !BURST_SAMPLING_ONE_SAMPLE
-      Timer1.initialize(SAMPLE_TIME);
+      Timer1.restart();
       Timer1.attachInterrupt(triggerSampling);
     #endif
-    burstSleepFlag = true;
+    // Timer1.stop();
     return;
   }
   DateTime nextWake(endTime + TimeSpan(SLEEP_SECONDS));
@@ -528,9 +515,10 @@ void enterBurstDeepSleep(DateTime endTime) {
   rtc.clearAlarm(1);
   timeAtBurstSwitch = rtc.now();
   resetTimer();
-  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
   #if !BURST_SAMPLING_ONE_SAMPLE
-    Timer1.initialize(SAMPLE_TIME);
+    rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
+    attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
+    Timer1.restart();
     Timer1.attachInterrupt(triggerSampling);
   #endif
 }
@@ -627,6 +615,8 @@ void triggerSampling() {
 
 void resetTimerInterrupt() {
   resetTimerFlag = true;
+  millisAtInterrupt = millis();
+  currentDateTime = currentDateTime + TimeSpan(1);
 }
 
 void deepSleepInterrupt() {
