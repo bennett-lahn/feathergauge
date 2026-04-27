@@ -103,7 +103,7 @@ float MS5803::getPressure(precision _precision) {
 	return pressure_reported;
 }
 
-// The Sparkfun library stupidly takes both sensor readings for getPressure() and getTemperature(), effectively doubling the time/power it takes to read pressure and temp
+// The Sparkfun library takes both sensor readings for getPressure() and getTemperature(), effectively doubling the time/power it takes to read pressure and temp
 // Most of this code is taken straight from different methods in the library, but combined to be more efficient
 // The process/math for converting pressure and temperature is described in the MS5803 datasheet
 void MS5803::getSensorReadings(temperature_units units, precision _precision_pres, precision _precision_temp, float *currentPressure, float *currentTemperature) {
@@ -122,7 +122,7 @@ void MS5803::getSensorReadings(temperature_units units, precision _precision_pre
    int64_t T2, OFF2, SENS2, OFF, SENS; // working variables
 
    if (temp_calc < 2000) { // If temp_calc is below 20.0C
-      T2 = 3 * (((int64_t)dT * dT) >> 33);
+      T2 = (3 * ((int64_t)dT * dT)) >> 33;
       OFF2 = 3 * ((temp_calc - 2000) * (temp_calc - 2000)) / 2;
       SENS2 = 5 * ((temp_calc - 2000) * (temp_calc - 2000)) / 8;
 
@@ -131,7 +131,7 @@ void MS5803::getSensorReadings(temperature_units units, precision _precision_pre
          SENS2 = SENS2 + 4 * ((temp_calc + 1500) * (temp_calc + 1500));
       }
    } else { // If temp_calc is above 20.0C
-      T2 = 7 * ((uint64_t)dT * dT) / pow(2, 37);
+      T2 = (7 * ((uint64_t)dT * dT)) >> 37;
       OFF2 = ((temp_calc - 2000) * (temp_calc - 2000)) / 16;
       SENS2 = 0;
    }
@@ -197,7 +197,7 @@ void MS5803::getMeasurements(precision _precision) {
 		}
 	}
 	else { // If temp_calc is above 20.0C
-		T2 = 7 * ((uint64_t)dT * dT) / pow(2, 37);
+		T2 = (7 * ((uint64_t)dT * dT)) >> 37;
 		OFF2 = ((temp_calc - 2000) * (temp_calc - 2000)) / 16;
 		SENS2 = 0;
 	}
@@ -253,6 +253,7 @@ uint32_t MS5803::getADCconversion(measurement _measurement, precision _precision
 	sendCommand(CMD_ADC_READ);
 	_i2cPort->requestFrom(_address, (uint8_t)3);
 
+	// TODO: What happens if I2C doesn't return 3 bytes?
 	while (_i2cPort->available()) {
 		highByte = _i2cPort->read();
 		midByte = _i2cPort->read();
@@ -279,7 +280,6 @@ void MS5803::sendCommand(uint8_t command)
 // time parameter is in ms
 // Note: Setting `USB_OFF` may impact serial connection when debugging
 void MS5803::sensorWait(uint8_t time) {
-   delay(time);
    unsigned long start = millis();
    while (millis() - start < time) {
       // In this sketch timer 0 wakes CPU from idle after 1 ms regardless of sleep time
