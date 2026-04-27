@@ -78,7 +78,7 @@ uint8_t MS5803::begin(TwoWire &wirePort) {
 
 // Return a temperature reading in either F or C.
 float MS5803::getTemperature(temperature_units units, precision _precision) {
-	getMeasurements(_precision);
+	getMeasurements(_precision, TEMP_ONLY);
 	float temperature_reported;
 	// If Fahrenheit is selected return the temperature converted to F
 	if (units == FAHRENHEIT) {
@@ -96,7 +96,7 @@ float MS5803::getTemperature(temperature_units units, precision _precision) {
 
 // Return a pressure reading
 float MS5803::getPressure(precision _precision) {
-	getMeasurements(_precision);
+	getMeasurements(_precision, PRESSURE_ONLY);
 	float pressure_reported;
 	pressure_reported = _pressure_actual;		   // Units: 0.1mbar
 	pressure_reported = pressure_reported / 10.0f; // Convert to mbar (float)
@@ -106,9 +106,14 @@ float MS5803::getPressure(precision _precision) {
 // The Sparkfun library takes both sensor readings for getPressure() and getTemperature(), effectively doubling the time/power it takes to read pressure and temp
 // Most of this code is taken straight from different methods in the library, but combined to be more efficient
 // The process/math for converting pressure and temperature is described in the MS5803 datasheet
-void MS5803::getSensorReadings(temperature_units units, precision _precision_pres, precision _precision_temp, float *currentPressure, float *currentTemperature) {
+// Temperature is always polled - it is required to compute a calibrated pressure reading.
+void MS5803::getSensorReadings(temperature_units units, precision _precision_pres, precision _precision_temp, float *currentPressure, float *currentTemperature, reading_mode mode) {
    int32_t temperature_raw = getADCconversion(TEMPERATURE, _precision_temp);
-   int32_t pressure_raw = getADCconversion(PRESSURE, _precision_pres);
+
+   int32_t pressure_raw = 0;
+   if (mode != TEMP_ONLY) {
+      pressure_raw = getADCconversion(PRESSURE, _precision_pres);
+   }
 
    int32_t temp_calc;
    int32_t pressure_calc;
@@ -123,16 +128,16 @@ void MS5803::getSensorReadings(temperature_units units, precision _precision_pre
 
    if (temp_calc < 2000) { // If temp_calc is below 20.0C
       T2 = (3 * ((int64_t)dT * dT)) >> 33;
-      OFF2 = 3 * ((temp_calc - 2000) * (temp_calc - 2000)) / 2;
-      SENS2 = 5 * ((temp_calc - 2000) * (temp_calc - 2000)) / 8;
+      OFF2 = (3 * ((temp_calc - 2000) * (temp_calc - 2000))) >> 1;
+      SENS2 = (5 * ((temp_calc - 2000) * (temp_calc - 2000))) >> 3;
 
       if (temp_calc < -1500) { // If temp_calc is below -15.0C
          OFF2 = OFF2 + 7 * ((temp_calc + 1500) * (temp_calc + 1500));
          SENS2 = SENS2 + 4 * ((temp_calc + 1500) * (temp_calc + 1500));
       }
    } else { // If temp_calc is above 20.0C
-      T2 = (7 * ((uint64_t)dT * dT)) >> 37;
-      OFF2 = ((temp_calc - 2000) * (temp_calc - 2000)) / 16;
+      T2 = (7 * ((int64_t)dT * dT)) >> 37;
+      OFF2 = ((temp_calc - 2000) * (temp_calc - 2000)) >> 4;
       SENS2 = 0;
    }
 
@@ -144,79 +149,28 @@ void MS5803::getSensorReadings(temperature_units units, precision _precision_pre
    OFF = OFF - OFF2;
    SENS = SENS - SENS2;
 
-   // Now let's calculate the pressure
-   pressure_calc = (((SENS * pressure_raw) / 2097152) - OFF) / 32768;
-
    _temperature_actual = temp_calc;
-   _pressure_actual = pressure_calc;
 
-   float pressure_reported;
-   pressure_reported = _pressure_actual;		   // Units: 0.1mbar
-   pressure_reported = pressure_reported / 10.0f; // Convert to mbar (float)
-   *currentPressure = pressure_reported;
+   if (mode != TEMP_ONLY) {
+      pressure_calc = (((SENS * pressure_raw) >> 21) - OFF) >> 15;
+      _pressure_actual = pressure_calc;
 
-   float temperature_reported;
-   if (units == FAHRENHEIT) {
-      temperature_reported = _temperature_actual / 100.0f;
-      temperature_reported = (((temperature_reported)*9) / 5) + 32;
-      *currentTemperature = temperature_reported;
-   } else { // If Celsius is selected return the temperature converted to C
-      temperature_reported = _temperature_actual / 100.0f;
+      if (currentPressure != nullptr) {
+         *currentPressure = _pressure_actual / 10.0f; // Convert from 0.1mbar to mbar
+      }
+   }
+
+   if (mode != PRESSURE_ONLY && currentTemperature != nullptr) {
+      float temperature_reported = _temperature_actual / 100.0f;
+      if (units == FAHRENHEIT) {
+         temperature_reported = (((temperature_reported)*9) / 5) + 32;
+      }
       *currentTemperature = temperature_reported;
    }
 }
 
-void MS5803::getMeasurements(precision _precision) {
-	// Retrieve ADC result
-	int32_t temperature_raw = getADCconversion(TEMPERATURE, _precision);
-	int32_t pressure_raw = getADCconversion(PRESSURE, _precision);
-
-	// Create Variables for calculations
-	int32_t temp_calc;
-	int32_t pressure_calc;
-
-	int32_t dT;
-
-	// Now that we have a raw temperature, let's compute our actual.
-	dT = temperature_raw - ((int32_t)coefficient[5] << 8);
-	temp_calc = (((int64_t)dT * coefficient[6]) >> 23) + 2000;
-
-	// TODO TESTING  _temperature_actual = temp_calc;
-
-	// Now we have our first order Temperature, let's calculate the second order.
-	int64_t T2, OFF2, SENS2, OFF, SENS; // working variables
-
-	if (temp_calc < 2000) { // If temp_calc is below 20.0C
-		T2 = 3 * (((int64_t)dT * dT) >> 33);
-		OFF2 = 3 * ((temp_calc - 2000) * (temp_calc - 2000)) / 2;
-		SENS2 = 5 * ((temp_calc - 2000) * (temp_calc - 2000)) / 8;
-
-		if (temp_calc < -1500) { // If temp_calc is below -15.0C
-			OFF2 = OFF2 + 7 * ((temp_calc + 1500) * (temp_calc + 1500));
-			SENS2 = SENS2 + 4 * ((temp_calc + 1500) * (temp_calc + 1500));
-		}
-	}
-	else { // If temp_calc is above 20.0C
-		T2 = (7 * ((uint64_t)dT * dT)) >> 37;
-		OFF2 = ((temp_calc - 2000) * (temp_calc - 2000)) / 16;
-		SENS2 = 0;
-	}
-
-	// Now bring it all together to apply offsets
-
-	OFF = ((int64_t)coefficient[2] << 16) + (((coefficient[4] * (int64_t)dT)) >> 7);
-	SENS = ((int64_t)coefficient[1] << 15) + (((coefficient[3] * (int64_t)dT)) >> 8);
-
-	temp_calc = temp_calc - T2;
-	OFF = OFF - OFF2;
-	SENS = SENS - SENS2;
-
-	// Now lets calculate the pressure
-
-	pressure_calc = (((SENS * pressure_raw) / 2097152) - OFF) / 32768;
-
-	_temperature_actual = temp_calc;
-	_pressure_actual = pressure_calc; // 10;// pressure_calc;
+void MS5803::getMeasurements(precision _precision, reading_mode mode) {
+   getSensorReadings(CELSIUS, _precision, _precision, nullptr, nullptr, mode);
 }
 
 uint32_t MS5803::getADCconversion(measurement _measurement, precision _precision) {

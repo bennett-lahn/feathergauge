@@ -45,6 +45,13 @@ enum measurement {
 	TEMPERATURE = 0x10
 };
 
+// Define which sensor readings to collect.
+enum reading_mode {
+	BOTH,
+	TEMP_ONLY,
+	PRESSURE_ONLY
+};
+
 // Define constants for Conversion precision
 enum precision {
 	ADC_256 = 0x00,
@@ -82,8 +89,9 @@ public:
 	// Return calculated pressure from sensor
 	float getPressure(precision _precision);
 
-   // Use to get temperature and pressure when both are desired at the same time. Updates associated float* values with new data
-   void getSensorReadings(temperature_units units, precision _precision_pres, precision _precision_temp, float *currentPressure, float *currentTemperature);
+   // Updates associated float* values with new data. Pass nullptr for an output pointer to skip writing that value.
+   // Even when mode is PRESSURE_ONLY, temperature is still polled internally (required for pressure calculation).
+   void getSensorReadings(temperature_units units, precision _precision_pres, precision _precision_temp, float *currentPressure, float *currentTemperature, reading_mode mode = BOTH);
 
 private:
 	int32_t _temperature_actual;
@@ -93,7 +101,7 @@ private:
 	uint8_t _address;			 // Variable used to store I2C device address.
 	uint16_t coefficient[8];	 // Coefficients;
 
-	void getMeasurements(precision _precision);
+	void getMeasurements(precision _precision, reading_mode mode = BOTH);
 
 	void sendCommand(uint8_t command);										   // General I2C send command function
 	uint32_t getADCconversion(measurement _measurement, precision _precision); // Retrieve ADC result
