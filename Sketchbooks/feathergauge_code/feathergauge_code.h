@@ -13,7 +13,7 @@
 
 #include <Wire.h>
 #include <SPI.h>
-#include <SD.h>
+#include <SdFat.h>
 #include <EEPROM.h>
 #include <avr/power.h>
 #include <TimerOne.h>
@@ -94,15 +94,29 @@ constexpr uint8_t ERROR_BLINK_CYCLE              = 10;        // Total blinks pe
 const uint8_t LED_WARMUP_DEFAULT_FLASHES         = 6;         // Number of expected flashes from sensor readings at program start
 const uint16_t LED_WARMUP_MANUAL_FLASH_DELAY_MS  = 100;       // How long the single flash at program start for one-sample burst
 
-// ADC and voltage definitions
-constexpr uint16_t MAX_ADC_VALUE                 = 1024;      // Maximum ADC reading (10-bit resolution)
+// ADC and voltage definitions used for measuring battery voltage
+constexpr uint16_t MAX_ADC_VALUE                 = 1023;      // Maximum ADC reading (10-bit resolution)
 constexpr float REFERENCE_VOLTAGE                = 3.3f;      // ADC reference voltage (V)
 constexpr uint8_t BATTERY_VOLTAGE_MULTIPLIER     = 2;         // Voltage divider compensation factor
 
+// Evaluated  at compile-time to eliminate floating-point overhead w/ battery voltage reading.
+// The base formula is: voltage = ((sensorValue * REFERENCE_VOLTAGE) / MAX_ADC_VALUE) * BATTERY_VOLTAGE_MULTIPLIER
+//
+// This constant pre-calculates that formula while applying two scaling factors:
+// 1. Multiplied by 100 to preserve two decimal places (fixed-point conversion).
+// 2. Multiplied by 2^16 (65536) to allow for bit-shift division at runtime.
+//
+// Runtime execution is reduced to three integer operations:
+// 1. Multiply the ADC reading by this constant.
+// 2. Add 32768 (half of 2^16) to ensure accurate rounding.
+// 3. Bit-shift right by 16 (>> 16), which executes division by 2^16 in zero clock cycles.
+constexpr uint32_t BATT_FAST_MULT = (uint32_t)((((REFERENCE_VOLTAGE * BATTERY_VOLTAGE_MULTIPLIER * 100.0) / MAX_ADC_VALUE) * 65536.0) + 0.5);
+
 // Buffer and data definitions
-constexpr uint8_t BUFFER_SIZE                    = 36;        // Circular buffer size (limited by 32u4 SRAM, only 2560 bytes)
-constexpr uint8_t BUFFER_WRITE_COUNT             = 32;        // Buffer and data definitions 32
-constexpr uint8_t FILENAME_LENGTH                = 13;        // Filename length, limited by FAT16 filesystem to 8.3 format (13th char for null terminator)
+constexpr uint8_t FILENAME_LENGTH                = 27;        // Filename length, limited by LFN system to 256 characters
+constexpr uint8_t ROW_BUFFER_SIZE                = 64;        // Current real row size is 45-46 bytes (43-44 data + CRLF)
+constexpr uint8_t FLUSH_INTERVAL_SECONDS         = 10;        // Number of elapsed seconds between periodic SD flushes
+constexpr uint8_t SERIAL_NUMBER_LENGTH           = 16;        // Buffer length of the serial number in bytes, as stored in EEPROM
 constexpr uint16_t FRESHWATER_DENSITY            = 997;       // Freshwater density (kg/m³) for pressure calculations
 constexpr uint16_t SALTWATER_DENSITY             = 1025;      // Saltwater density (kg/m³) for pressure calculations
 
@@ -111,18 +125,6 @@ constexpr uint8_t ERROR_SD_CARD_FAILED           = 1;         // Error code for 
 constexpr uint8_t ERROR_FILE_OPEN_FAILED         = 2;         // Error code for file creation failure
 
 constexpr uint8_t SERIAL_NUMBER_ADDRESS          = 0;         // EEPROM address for device serial number
-
-// ===========================
-// DATA STRUCTURE FOR CIRCULAR BUFFER
-// ===========================
-struct DataPoint {
-  float pressure;
-  float temperature;
-  float batteryVoltage;
-  uint16_t millisec;
-  DateTime now;
-  bool valid; // Flag to indicate if this data point is valid
-};
 
 // ===========================
 // GLOBAL VARIABLE DECLARATIONS
@@ -142,18 +144,14 @@ struct DataPoint {
 #endif
 
 extern RTC_DS3231 rtc;
-extern File outputFile;            // Used to open, write to, and close files on the SD card
-
-// Circular buffer variables
-extern DataPoint dataBuffer[BUFFER_SIZE];
-extern int bufferHead;             // Points to next write position
-extern int bufferTail;             // Points to next read position
-extern int bufferCount;            // Number of items in buffer
-extern bool bufferOverflow;        // Flag to indicate buffer overflow
+extern File32 outputFile;          // Used to open, write to, and close files on the SD card
 
 extern DateTime timeAtBurstSwitch; // Time burst switched between sleep and record
-extern DateTime currentSecond;     // Time of current second
-extern float currentVoltage;       // Voltage of battery, updated every second
+extern DateTime currentDateTime;   // Time of current second
+extern int16_t currentVoltage;     // Voltage of battery, updated every second; fixed point X.XX
+
+// Number of seconds elapsed since the last SD flush (incremented in resetTimer())
+extern uint8_t secondsSinceFlush;
 
 // Sampling flag for ISR to main loop communication
 extern volatile bool samplingFlag;
@@ -177,9 +175,9 @@ extern bool ledWarmupManualPulsePending;
 
 /**
  * performSensorReading
- * Purpose: Read pressure and temperature from the active sensor and enqueue a data point with timestamp and battery voltage.
+ * Purpose: Read pressure and temperature from the active sensor and immediately write one CSV row.
  * Inputs:
- *   - None (uses globals: currentSecond, millisAtInterrupt, currentVoltage, currentPressure, currentTemperature)
+ *   - None (uses globals: currentDateTime, millisAtInterrupt, currentVoltage)
  * Usage: Called when `samplingFlag` is set or in one-sample burst mode.
  */
 void performSensorReading();
@@ -188,10 +186,10 @@ void performSensorReading();
  * getBatteryVoltage
  * Purpose: Measure battery voltage via ADC on `BATTERY_VOLTAGE_PIN` using divider ratio.
  * Inputs: None
- * Returns: float — battery voltage in volts.
+ * Returns: int16_t - battery voltage in volts, fixed point format X.XX
  * Usage: Call once per second or as needed; ADC MUST enabled/disabled by caller.
  */
-float getBatteryVoltage();
+int16_t getBatteryVoltage();
 
 /**
  * resetTimer
@@ -203,58 +201,36 @@ void resetTimer();
 
 /**
  * makeFileName
- * Purpose: Generate a daily-rotating CSV filename in the form MM-DD-XX.csv where XX increments from 00..99.
+ * Purpose: Generate a daily-rotating CSV filename in the form WG-SS_YYYY-MM-DD_IT-XX.csv.
  * Inputs:
- *   - fileName: char* (out) — caller-provided buffer of length FILENAME_LENGTH.
+ *   - fileName: char* (output) - caller-provided buffer of length FILENAME_LENGTH.
+ *   - serialNumber: char* (input) - serial number string loaded from EEPROM.
  * Usage: Call once during setup before opening the SD file.
  */
-void makeFileName(char* fileName);
+void makeFileName(char* fileName, char* serialNumber);
 
 /**
- * setTimeStamp
- * Purpose: Provide FAT filesystem date/time for file creation/modification via SD library callback.
+ * setFileTimestampOnce
+ * Purpose: Set FAT metadata once for the opened SD file.
  * Inputs:
- *   - date: uint16_t* (out) — FAT date packed with year, month, day.
- *   - time: uint16_t* (out) — FAT time packed with hour, minute, second.
- * Usage: Registered as SdFile::dateTimeCallback handler.
+ *   - file: File32& (in/out) - opened file to timestamp.
+ * Usage: Call immediately after opening the file to set create/write/access times one time
+ *        from the RTC, without registering a callback that runs again on later sync/write operations.
  */
-void setTimeStamp(uint16_t* date, uint16_t* time);
+void setFileTimestampOnce(File32& file);
 
 /**
  * writeToOutputFile
- * Purpose: Append a CSV line to the open SD file with timestamp, pressure, temperature, and battery voltage.
+ * Purpose: Append one CSV line to the open SD file using fixed-point values and pointer arithmetic formatting.
  * Inputs:
- *   - now: DateTime — timestamp (date and time to seconds).
- *   - millisec: int — millisecond offset within the second (0..999).
- *   - pressure: float — pressure in mbar.
- *   - temperature: float — temperature in °C.
- *   - batteryVoltage: float — battery voltage in V.
- * Usage: Call repeatedly to serialize buffered samples.
+ *   - now: DateTime - timestamp (date and time to seconds).
+ *   - millisec: int - millisecond offset within the second (0..999).
+ *   - pressure: int32_t - pressure in tenths of mbar (XXXX.X).
+ *   - temperature: int32_t - temperature in hundredths of degrees C (XX.XX).
+ *   - batteryVoltage: int16_t - battery voltage in hundredths of volts (X.XX).
+ * Usage: Call to write sensor reading to file.
  */
-void writeToOutputFile(DateTime now, int millisec, float pressure, float temperature, float batteryVoltage);
-
-/**
- * addToBuffer
- * Purpose: Push a data point into the circular buffer; overwrites oldest when full.
- * Inputs:
- *   - now: DateTime — timestamp for the sample (second resolution).
- *   - millisec: int — millisecond offset within the current second (0..999).
- *   - pressure: float — pressure reading in mbar.
- *   - temperature: float — temperature reading in °C.
- *   - batteryVoltage: float — battery voltage in V.
- * Usage: Call immediately after each sensor read to store data between SD writes.
- */
-void addToBuffer(DateTime now, int millisec, float pressure, float temperature, float batteryVoltage);
-
-/**
- * readFromBuffer
- * Purpose: Pop the oldest valid data point from the circular buffer.
- * Inputs:
- *   - data: DataPoint* (out) — caller-allocated struct to receive data.
- * Returns: bool — true if a valid data point was returned; false if buffer empty.
- * Usage: Use to remove and return the oldest data point from the buffer.
- */
-bool readFromBuffer(DataPoint* data);
+void writeToOutputFile(DateTime now, int millisec, int32_t pressure, int32_t temperature, int16_t batteryVoltage);
 
 /**
  * enterDelayDeepSleep
@@ -337,5 +313,32 @@ void deepSleepInterrupt();
  * Inputs: None
  */
 void burstSleepInterrupt();
+
+// ASCII arithmetic functions used to convert sensor readings into a saveable format
+
+// Appends a variable-length integer to ptr and advances ptr past the written digits.
+static inline void appendInt(char*& ptr, int val) {
+  itoa(val, ptr, 10);
+  while (*ptr) ptr++;
+}
+
+// Appends a variable-length 32-bit integer to ptr and advances ptr past the written digits.
+static inline void append32Int(char*& ptr, int32_t val) {
+  ltoa(val, ptr, 10);
+  while (*ptr) ptr++;
+}
+
+// Appends a fixed 2-digit zero-padded integer (0-99) using direct ASCII math.
+static inline void appendPadded2(char*& ptr, int val) {
+  *ptr++ = '0' + (val / 10);
+  *ptr++ = '0' + (val % 10);
+}
+
+// Appends a fixed 3-digit zero-padded integer (0-999) using direct ASCII math.
+static inline void appendPadded3(char*& ptr, int val) {
+  *ptr++ = '0' + (val / 100);
+  *ptr++ = '0' + ((val / 10) % 10);
+  *ptr++ = '0' + (val % 10);
+}
 
 #endif

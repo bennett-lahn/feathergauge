@@ -14,22 +14,19 @@ CustomMS5803 pressureSensor;
 #endif
 
 RTC_DS3231 rtc;
-File outputFile;            // Used to open, write to, and close files on the SD card
+SdFat32 sd;
+File32 outputFile;           // Used to open, write to, and close files on the SD card
 
-// Circular buffer variables
-DataPoint dataBuffer[BUFFER_SIZE];
-int bufferHead        = 0;  // Points to next write position
-int bufferTail        = 0;  // Points to next read position
-int bufferCount       = 0;  // Number of items in buffer
-bool bufferOverflow   = false; // Flag to indicate buffer overflow
-
-DateTime timeAtBurstSwitch; // Time burst switched between sleep and record
-DateTime currentDateTime;     // Time of current second
-float currentVoltage;       // Voltage of battery, updated every second
+DateTime timeAtBurstSwitch;  // Time burst switched between sleep and record
+DateTime currentDateTime;    // Time of current second
+int16_t currentVoltage;      // Voltage of battery, updated every second
 
 // Sampling flag for ISR to main loop communication
 volatile bool samplingFlag   = false;
 volatile bool resetTimerFlag = false;
+
+// Number of seconds elapsed since the last SD flush (incremented in resetTimer())
+uint8_t secondsSinceFlush = 0;
 
 // Number of milliseconds at last 1 Hz interrupt from RTC
 unsigned long millisAtInterrupt = 0; 
@@ -104,34 +101,30 @@ void setup() {
 
   if (Serial) Serial.print(F("Initializing SD card..."));
   
-  if (!SD.begin(SD_CARD_SELECT_PIN)) { 
+  if (!sd.begin(SD_CARD_SELECT_PIN, SPI_HALF_SPEED)) { 
     if (Serial) Serial.println(F("Card Failed or Not Present"));
     error(ERROR_SD_CARD_FAILED);
     return;
   }
-  
-  for (int i = 0; i < BUFFER_SIZE; i++) {
-    dataBuffer[i].valid = false;
-  }
 
   if (Serial) Serial.println(F("Card Initialized."));
   char fileName[FILENAME_LENGTH];
-  makeFileName(fileName);
+  char serialNumber[16];
+  EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber); 
+  if (Serial) Serial.println(F("Read EEPROM"));
+  makeFileName(fileName, serialNumber);
   
-  SdFile::dateTimeCallback(setTimeStamp); // Timestamps the .csv file (inserts as metadata)
-  outputFile = SD.open(fileName, FILE_WRITE); // Opens .csv file
+  outputFile.open(fileName, O_WRITE | O_CREAT | O_AT_END); // Opens .csv file
 
   if (outputFile) {
+    setFileTimestampOnce(outputFile); // Set file metadata once; do not register a global callback
     if (Serial) Serial.println(F("File opened"));
-    char serialNumber[16];
-    EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber); 
-    if (Serial) Serial.println(F("Read EEPROM"));
     outputFile.print(F("W.G. Num: "));
     outputFile.print(serialNumber);
     outputFile.print(',');
     outputFile.print(F("Timestamp,Pressure [mbar],Temp [deg C],Battery [VDC]"));
     outputFile.println();
-    outputFile.flush();
+    outputFile.sync();
   } else {
     if (Serial) Serial.println(F("error opening datalog-case1"));
     error(ERROR_FILE_OPEN_FAILED);
@@ -177,18 +170,14 @@ void setup() {
 
 void loop() {
     #if BURST_SAMPLING
-      // If true, write time ended; write to SD card and sleep
+      // If true, write time ended; flush SD buffer and enter sleep
       if (elapsed.totalseconds() > WRITE_SECONDS || BURST_SAMPLING_ONE_SAMPLE) {
         #if BURST_SAMPLING_ONE_SAMPLE
           performSensorReading();
         #endif
         DateTime endTime = rtc.now();
-        DataPoint data;
-        while (readFromBuffer(&data)) {
-          writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, 
-                            data.batteryVoltage);
-        }
         outputFile.flush();
+        secondsSinceFlush = 0;
         if (Serial) {
           Serial.print(F("[BURST] End write window at "));
           Serial.print(endTime.hour()); Serial.print(':');
@@ -213,32 +202,16 @@ void loop() {
       samplingFlag = false;
     }
 
-    if (bufferCount == BUFFER_WRITE_COUNT) {
-      DataPoint data;
-      int writeCount = 0;
-      while (readFromBuffer(&data) && writeCount < BUFFER_WRITE_COUNT) {
-        writeToOutputFile(data.now, data.millisec, data.pressure, data.temperature, 
-                          data.batteryVoltage);
-        writeCount++;
-        if (samplingFlag) {
-          performSensorReading();
-          samplingFlag = false;
-        }
-      }
+    if (secondsSinceFlush >= FLUSH_INTERVAL_SECONDS) {
       if (Serial) {
-        Serial.print(F("Starting write at time: "));
+        Serial.print(F("Flushing SD card at time "));
         Serial.println(millis());
       }
       outputFile.flush();
-      if (Serial) {
-        Serial.print(F("Wrote "));
-        Serial.print(writeCount);
-        Serial.print(F(" data points to SD card at time "));
-        Serial.println(millis());
-      }
+      secondsSinceFlush = 0;
     }
-    // Finished writing to SD card, sleep until next sampling time or interrupt from timers/RTC
-    // When waking from burst sleep, this idle command mean the MCU will sleep until the next ms, 
+    // Sleep until next sampling time or interrupt from timers/RTC
+    // When waking from burst sleep, this idle command means the MCU will sleep until the next ms, 
     // then check the burst flag
     setForeverIdleSleep();
 }
@@ -247,27 +220,28 @@ void loop() {
 // DATA ACQUISITION FUNCTIONS
 // ===========================
 void performSensorReading() {
-  float currentTemperature, currentPressure;
-  pressureSensor.getSensorReadings(CELSIUS, ADC_4096, ADC_2048, &currentPressure, 
+  int32_t currentTemperature, currentPressure;
+  pressureSensor.getSensorReadings(ADC_4096, ADC_2048, &currentPressure, 
                                 &currentTemperature);
 
   updateLedWarmupIndicator();
   uint16_t millisec = millis() - millisAtInterrupt;
-  // This eliminates 99% of rare cares where the millisecond timer and RTC are exactly in sync, 
-  // while maintaining an error of +/- 1ms
+
+  // This eliminates 99% of cases where the millisecond timer and RTC are exactly in sync, 
+  // leading to millisecond overflow, while maintaining an error of +/- 1ms
   // An overflow more than 1000 is untouched so it can be discarded in postprocessing
   millisec = (millisec == 1000) ? 999 : millisec;
-  DateTime now = currentDateTime;
 
-  addToBuffer(now, millisec, currentPressure, currentTemperature, currentVoltage);
+  writeToOutputFile(currentDateTime, millisec, currentPressure, currentTemperature, currentVoltage);
 }
 
-float getBatteryVoltage() {
-  int sensorValue = analogRead(BATTERY_VOLTAGE_PIN);
-  float batteryVoltage = (sensorValue * REFERENCE_VOLTAGE) / MAX_ADC_VALUE;
-  // Adjust multiplier based on your divider
-  float actualBatteryVoltage = batteryVoltage * BATTERY_VOLTAGE_MULTIPLIER;
-  return actualBatteryVoltage;
+int16_t getBatteryVoltage() {
+  int32_t sensorValue = analogRead(BATTERY_VOLTAGE_PIN);
+
+  // 1. Multiply by scaled constant.
+  // 2. Add 32768 (half of 65536) to ensure proper rounding.
+  // 3. Bit-shift right by 16 (equivalent to dividing by 65536).
+  return (int16_t) (((sensorValue * BATT_FAST_MULT) + 32768) >> 16);
 }
 
 // ===========================
@@ -275,6 +249,7 @@ float getBatteryVoltage() {
 // ===========================
 
 void resetTimer() {
+  secondsSinceFlush++;
   power_adc_enable();
   // millisAtInterrupt = millis();
   currentDateTime = rtc.now();
@@ -304,31 +279,40 @@ void resetTimer() {
 }
 
 
-void makeFileName(char* fileName) {
-  // Format: MM-DD-00.csv (e.g., 04-23-01.csv)
+void makeFileName(char* fileName, char* serialNumber) {
+  // Format: WG-00_YYYY-MM-DD_IT-XX.csv (ISO 8601 date) (e.g., WG-08_2026-05-04_IT-00.csv)
+  char* curr = fileName;
   DateTime now = rtc.now();
-  
-  // Build filename: MM-DD-
-  fileName[0] = '0' + (now.month() / 10);
-  fileName[1] = '0' + (now.month() % 10);
-  fileName[2] = '-';
-  fileName[3] = '0' + (now.day() / 10);
-  fileName[4] = '0' + (now.day() % 10);
-  fileName[5] = '-';
-  fileName[6] = '0';
-  fileName[7] = '0';
-  fileName[8] = '.';
-  fileName[9] = 'c';
-  fileName[10] = 's';
-  fileName[11] = 'v';
-  fileName[12] = '\0';
+  *curr++ = 'W';
+  *curr++ = 'G';
+  *curr++ = '-';
+  *curr++ = *serialNumber++;
+  *curr++ = *serialNumber;
+  *curr++ = '_';
+  appendInt(curr, (int) now.year());
+  *curr++ = '-';
+  appendPadded2(curr, (int) now.month());
+  *curr++ = '-';
+  appendPadded2(curr, (int) now.day());
+  *curr++ = '_';
+  *curr++ = 'I';
+  *curr++ = 'T';
+  *curr++ = '-';
+  char* startOfIt = curr;
+  *curr++ = '0';
+  *curr++ = '0';
+  *curr++ = '.';
+  *curr++ = 'c';
+  *curr++ = 's';
+  *curr++ = 'v';
+  *curr++ = '\0';
   // Find the next available file index for this day
   for (uint8_t fileIndex = 1; fileIndex < 100; fileIndex++) {
-    if (!SD.exists(fileName)) {
+    if (!sd.exists(fileName)) {
       break;
     }
-    fileName[6] = '0' + (fileIndex / 10);
-    fileName[7] = '0' + (fileIndex % 10);
+    *startOfIt = '0' + (fileIndex / 10);
+    *(startOfIt + 1) = '0' + (fileIndex % 10);
   }
   
   if (Serial) {
@@ -337,88 +321,65 @@ void makeFileName(char* fileName) {
   }
 }
 
-void setTimeStamp(uint16_t* date, uint16_t* time) {
+void setFileTimestampOnce(File32& file) {
   DateTime now = rtc.now();
-  *date = FAT_DATE(now.year(), now.month(), now.day());
-  *time = FAT_TIME(now.hour(), now.minute(), now.second());
+  if (!file.timestamp(T_CREATE | T_WRITE | T_ACCESS, now.year(), now.month(), now.day(),
+                      now.hour(), now.minute(), now.second())) {
+    if (Serial) Serial.println(F("Failed to set initial file timestamp"));
+  }
 }
 
-void writeToOutputFile(DateTime now, int millisec, float pressure, 
-                       float temperature, float batteryVoltage) {
-  // Write data to SD card
-  outputFile.print(now.year());
-  outputFile.print('/');
-  outputFile.print(now.month());
-  outputFile.print('/');
-  outputFile.print(now.day());
-  outputFile.print(",");
-  outputFile.print(now.hour());
-  outputFile.print(':');
-  if (now.minute() < 10) {
-    outputFile.print("0");
-  }
-  outputFile.print(now.minute());
-  outputFile.print(':');
-  if (now.second() < 10) {
-    outputFile.print("0");
-  }
-  outputFile.print(now.second());
-  outputFile.print(':');
-  if (millisec < 10) {
-    outputFile.print("00");
-  } else if (millisec < 100) {
-    outputFile.print("0");
-  }
-  outputFile.print(millisec);
-  outputFile.print(",");
-  outputFile.print(pressure);
-  outputFile.print(",");
-  outputFile.print(temperature);
-  outputFile.print(",");
-  outputFile.print(batteryVoltage);
-  outputFile.println();
-}
+void writeToOutputFile(DateTime now, int millisec, int32_t pressure, 
+                       int32_t temperature, int16_t batteryVoltage) {
+  char rowBuffer[ROW_BUFFER_SIZE];
+  char* ptr = rowBuffer;
 
-// ===========================
-// CIRCULAR BUFFER FUNCTIONS
-// ===========================
+  // Date: YYYY/M/D
+  appendInt(ptr, (int)now.year());
+  *ptr++ = '/';
+  appendInt(ptr, (int)now.month());
+  *ptr++ = '/';
+  appendInt(ptr, (int)now.day());
+  *ptr++ = ',';
 
-void addToBuffer(DateTime now, int millisec, float pressure, float temperature, 
-                  float batteryVoltage) {
-  if (bufferCount >= BUFFER_SIZE) {
-    bufferTail = (bufferTail + 1) % BUFFER_SIZE;
+  // Time: H:MM:SS.mmm
+  appendInt(ptr, (int)now.hour());
+  *ptr++ = ':';
+  appendPadded2(ptr, (int)now.minute());
+  *ptr++ = ':';
+  appendPadded2(ptr, (int)now.second());
+  *ptr++ = '.';
+  appendPadded3(ptr, millisec);
+  *ptr++ = ',';
+
+  // Pressure: XXXX.X (fixed point, 1 decimal place, units of 0.1 mbar)
+  append32Int(ptr, pressure / 10);
+  *ptr++ = '.';
+  *ptr++ = '0' + (pressure % 10);
+  *ptr++ = ',';
+
+  // Temperature: XX.XX (fixed point, 2 decimal places, units of 0.01 C, signed)
+  int32_t temp_fixed;
+  if (temperature < 0) {
+    *ptr++ = '-';
+    temp_fixed = -temperature;
   } else {
-    bufferCount++;
+    temp_fixed = temperature;
   }
-  dataBuffer[bufferHead].now = now;
-  dataBuffer[bufferHead].millisec = millisec;
-  dataBuffer[bufferHead].pressure = pressure;
-  dataBuffer[bufferHead].temperature = temperature;
-  dataBuffer[bufferHead].batteryVoltage = batteryVoltage;
-  dataBuffer[bufferHead].valid = true;
-  
-  bufferHead = (bufferHead + 1) % BUFFER_SIZE;
-}
+  append32Int(ptr, temp_fixed / 100);
+  *ptr++ = '.';
+  appendPadded2(ptr, (int)(temp_fixed % 100));
+  *ptr++ = ',';
 
-bool readFromBuffer(DataPoint* data) {
-  if (bufferCount == 0) {
-    return false; // Buffer is empty
-  }
-  
-  // Copy data from buffer
-  data->now = DateTime(dataBuffer[bufferTail].now.unixtime());
-  data->millisec = dataBuffer[bufferTail].millisec;
-  data->pressure = dataBuffer[bufferTail].pressure;
-  data->temperature = dataBuffer[bufferTail].temperature;
-  data->batteryVoltage = dataBuffer[bufferTail].batteryVoltage;
-  data->valid = dataBuffer[bufferTail].valid;
-  
-  // Mark as invalid and move tail
-  dataBuffer[bufferTail].valid = false;
-  bufferTail = (bufferTail + 1) % BUFFER_SIZE;
-  bufferCount--;
-  
-  return data->valid;
+  // Voltage: X.XX (fixed point, 2 decimal places, units of 0.01 V)
+  appendInt(ptr, (int)(batteryVoltage / 100));
+  *ptr++ = '.';
+  appendPadded2(ptr, (int)(batteryVoltage % 100));
+
+  *ptr++ = '\r';
+  *ptr++ = '\n';
+
+  outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), static_cast<size_t>(ptr - rowBuffer));
 }
 
 // ===========================
@@ -467,14 +428,15 @@ void delayStartDeepSleepLoop() {
     
     // Not yet at start date, log one sample and go back to sleep
     power_adc_enable();
-    performSensorReading();
+    int32_t delayPressure, delayTemperature;
+    pressureSensor.getSensorReadings(ADC_4096, ADC_2048, &delayPressure, &delayTemperature);
+    updateLedWarmupIndicator();
     // Perform voltage reading after sensor reading to give ADC time to settle
     currentVoltage = getBatteryVoltage(); 
     power_adc_disable();
-    DataPoint data;
-    readFromBuffer(&data);
-    // Don't use batteryVoltage or current date from buffer because it is not updated in deep sleep mode
-    writeToOutputFile(now, 0, data.pressure, data.temperature, currentVoltage);
+    // Use `now` (current RTC time) and `currentVoltage` directly - currentDateTime and the global
+    // voltage are not updated during deep sleep, so they cannot be used here
+    writeToOutputFile(now, 0, delayPressure, delayTemperature, currentVoltage);
     outputFile.flush();
     rtc.clearAlarm(1);
   }

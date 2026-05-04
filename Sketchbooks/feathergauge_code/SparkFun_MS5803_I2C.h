@@ -33,12 +33,6 @@ Distributed as-is; no warranty is given.
 #include "Wire.h"
 #include "avr/power.h"
 
-// Define units for conversions.
-enum temperature_units {
-	CELSIUS,
-	FAHRENHEIT,
-};
-
 // Define measurement type.
 enum measurement {
 	PRESSURE = 0x00,
@@ -85,13 +79,13 @@ public:
 	uint8_t begin(TwoWire &wirePort, uint8_t address); // Collect coefficients from sensor
 
 	// Return calculated temperature from sensor
-	float getTemperature(temperature_units units, precision _precision);
+	int32_t getTemperature(precision _precision);
 	// Return calculated pressure from sensor
-	float getPressure(precision _precision);
+	int32_t getPressure(precision _precision);
 
-   // Updates associated float* values with new data. Pass nullptr for an output pointer to skip writing that value.
+   // Updates associated int32_t* values with new data. Pass nullptr for an output pointer to skip writing that value.
    // Even when mode is PRESSURE_ONLY, temperature is still polled internally (required for pressure calculation).
-   void getSensorReadings(temperature_units units, precision _precision_pres, precision _precision_temp, float *currentPressure, float *currentTemperature, reading_mode mode = BOTH);
+   void getSensorReadings(precision _precision_pres, precision _precision_temp, int32_t *currentPressure, int32_t *currentTemperature, reading_mode mode = BOTH);
 
 private:
 	int32_t _temperature_actual;
@@ -101,6 +95,7 @@ private:
 	uint8_t _address;			 // Variable used to store I2C device address.
 	uint16_t coefficient[8];	 // Coefficients;
 
+	// Wrapper for getSensorReadings that updates the internal _temperature_actual and _pressure_actual without using the returned values
 	void getMeasurements(precision _precision, reading_mode mode = BOTH);
 
 	void sendCommand(uint8_t command);										   // General I2C send command function

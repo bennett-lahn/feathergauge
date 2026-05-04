@@ -76,38 +76,23 @@ uint8_t MS5803::begin(TwoWire &wirePort) {
 	return 0;
 }
 
-// Return a temperature reading in either F or C.
-float MS5803::getTemperature(temperature_units units, precision _precision) {
+// Return temperature in hundredths of degrees C.
+int32_t MS5803::getTemperature(precision _precision) {
 	getMeasurements(_precision, TEMP_ONLY);
-	float temperature_reported;
-	// If Fahrenheit is selected return the temperature converted to F
-	if (units == FAHRENHEIT) {
-		temperature_reported = _temperature_actual / 100.0f;
-		temperature_reported = (((temperature_reported)*9) / 5) + 32;
-		return temperature_reported;
-	}
-
-	// If Celsius is selected return the temperature converted to C
-	else {
-		temperature_reported = _temperature_actual / 100.0f;
-		return temperature_reported;
-	}
+	return _temperature_actual;
 }
 
 // Return a pressure reading
-float MS5803::getPressure(precision _precision) {
+int32_t MS5803::getPressure(precision _precision) {
 	getMeasurements(_precision, PRESSURE_ONLY);
-	float pressure_reported;
-	pressure_reported = _pressure_actual;		   // Units: 0.1mbar
-	pressure_reported = pressure_reported / 10.0f; // Convert to mbar (float)
-	return pressure_reported;
+	return _pressure_actual;
 }
 
 // The Sparkfun library takes both sensor readings for getPressure() and getTemperature(), effectively doubling the time/power it takes to read pressure and temp
 // Most of this code is taken straight from different methods in the library, but combined to be more efficient
 // The process/math for converting pressure and temperature is described in the MS5803 datasheet
 // Temperature is always polled - it is required to compute a calibrated pressure reading.
-void MS5803::getSensorReadings(temperature_units units, precision _precision_pres, precision _precision_temp, float *currentPressure, float *currentTemperature, reading_mode mode) {
+void MS5803::getSensorReadings(precision _precision_pres, precision _precision_temp, int32_t *currentPressure, int32_t *currentTemperature, reading_mode mode) {
    int32_t temperature_raw = getADCconversion(TEMPERATURE, _precision_temp);
 
    int32_t pressure_raw = 0;
@@ -154,23 +139,21 @@ void MS5803::getSensorReadings(temperature_units units, precision _precision_pre
    if (mode != TEMP_ONLY) {
       pressure_calc = (((SENS * pressure_raw) >> 21) - OFF) >> 15;
       _pressure_actual = pressure_calc;
-
-      if (currentPressure != nullptr) {
-         *currentPressure = _pressure_actual / 10.0f; // Convert from 0.1mbar to mbar
-      }
+		if (currentPressure != nullptr) {
+			*currentPressure = _pressure_actual;
+		}
    }
 
    if (mode != PRESSURE_ONLY && currentTemperature != nullptr) {
-      float temperature_reported = _temperature_actual / 100.0f;
-      if (units == FAHRENHEIT) {
-         temperature_reported = (((temperature_reported)*9) / 5) + 32;
-      }
-      *currentTemperature = temperature_reported;
+		if (currentTemperature != nullptr) {
+			*currentTemperature = _temperature_actual;
+		}
    }
 }
 
 void MS5803::getMeasurements(precision _precision, reading_mode mode) {
-   getSensorReadings(CELSIUS, _precision, _precision, nullptr, nullptr, mode);
+	int32_t unusedPres, unusedTemp;
+   getSensorReadings(_precision, _precision, &unusedPres, &unusedTemp, mode);
 }
 
 uint32_t MS5803::getADCconversion(measurement _measurement, precision _precision) {

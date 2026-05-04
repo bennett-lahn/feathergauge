@@ -32,6 +32,7 @@ def parse_timestamp(timestamp_str: str) -> datetime:
     # Common timestamp formats to try
     formats = [
         '%Y/%m/%d %H:%M:%S:%f',   # 2025/9/3 14:1:20:287 (with milliseconds)
+        '%Y/%m/%d %H:%M:%S.%f',   # 2026/5/4 13:30:55.584 (with milliseconds)
         '%Y/%m/%d %H:%M:%S',      # 2025/9/3 14:1:20
         '%Y-%m-%d %H:%M:%S',      # 2023-12-01 14:30:25
         '%Y-%m-%d %H:%M:%S.%f',   # 2023-12-01 14:30:25.123456
@@ -243,7 +244,20 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
                     # print(f"Debug - Row {row_num}: {values}")
                     
                     # Create a dictionary mapping fieldnames to values
-                    if len(values) >= len(fieldnames):
+                    # Handle format where date/time are split across two columns:
+                    # YYYY/M/D,HH:MM:SS.mmm,pressure,temp,battery
+                    if (
+                        len(values) == len(fieldnames) + 1
+                        and fieldnames
+                        and fieldnames[0] == 'Timestamp'
+                        and ':' in values[1]
+                    ):
+                        normalized_values = [
+                            f"{values[0].strip()} {values[1].strip()}",
+                            *values[2:],
+                        ]
+                        row = dict(zip(fieldnames, normalized_values[:len(fieldnames)]))
+                    elif len(values) >= len(fieldnames):
                         row = dict(zip(fieldnames, values[:len(fieldnames)]))
                     else:
                         print(f"Warning: Row {row_num} has insufficient columns: {values}")
@@ -258,7 +272,7 @@ def analyze_csv_data(csv_file_path: str, expected_sampling_rate: float = None) -
                             # Date is in first column, time might be in second column
                             if len(values) > 1 and ':' in values[1]:
                                 # Combine date and time
-                                combined_timestamp = f"{timestamp_str},{values[1]}"
+                                combined_timestamp = f"{timestamp_str} {values[1].strip()}"
                                 timestamp = parse_timestamp(combined_timestamp)
                                 timestamps.append(timestamp)
                                 data_points.append(row)
