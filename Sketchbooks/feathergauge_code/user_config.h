@@ -9,7 +9,6 @@
 
 // Set to false for rapid start
 // Set to true for delayed start, using selected start date
-// Untested, DO NOT USE. Set to "false"
 #define DELAY_START                  false
 
 // Set to true for burst sampling
@@ -25,7 +24,7 @@
 // USER INPUTS:
 // Please set the below variables to reflect your sampling preferences.
 // ===========================
-constexpr uint8_t SAMPLE_FREQ = 16;   // Sampling frequency in Hz
+constexpr uint8_t SAMPLE_FREQ = 16;   // Sampling frequency in Hz (16 Hz maximum)
 
 // Burst sampling alternates between writing and sleeping according to set periods below
 constexpr uint32_t WRITE_SECONDS = 1;   // Number of seconds to sample data in burst sampling
@@ -33,6 +32,7 @@ constexpr uint32_t WRITE_SECONDS = 1;   // Number of seconds to sample data in b
 constexpr uint32_t SLEEP_SECONDS = 10;  // Number of seconds to sleep in burst sampling
 
 // Edit for DELAY start ONLY
+// Do not include leading zeroes. (e.g. for January, START_MONTH = 1, not START_MONTH = 01)
 #if DELAY_START // Date to start sampling
   const int START_YEAR   = 2025; // Year to start sampling
   const int START_MONTH  = 11;   // Month to start sampling

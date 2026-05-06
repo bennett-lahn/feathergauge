@@ -116,6 +116,7 @@ constexpr uint32_t BATT_FAST_MULT = (uint32_t)((((REFERENCE_VOLTAGE * BATTERY_VO
 constexpr uint8_t FILENAME_LENGTH                = 27;        // Filename length, limited by LFN system to 256 characters
 constexpr uint8_t ROW_BUFFER_SIZE                = 64;        // Current real row size is 45-46 bytes (43-44 data + CRLF)
 constexpr uint8_t FLUSH_INTERVAL_SECONDS         = 10;        // Number of elapsed seconds between periodic SD flushes
+// constexpr uint32_t FILE_ROLLOVER_SIZE_BYTES      = 3800000000UL; // Max size of one CSV before rotating to next file
 constexpr uint8_t SERIAL_NUMBER_LENGTH           = 16;        // Buffer length of the serial number in bytes, as stored in EEPROM
 constexpr uint16_t FRESHWATER_DENSITY            = 997;       // Freshwater density (kg/m³) for pressure calculations
 constexpr uint16_t SALTWATER_DENSITY             = 1025;      // Saltwater density (kg/m³) for pressure calculations
@@ -334,11 +335,20 @@ static inline void appendPadded2(char*& ptr, int val) {
   *ptr++ = '0' + (val % 10);
 }
 
-// Appends a fixed 3-digit zero-padded integer (0-999) using direct ASCII math.
-static inline void appendPadded3(char*& ptr, int val) {
-  *ptr++ = '0' + (val / 100);
-  *ptr++ = '0' + ((val / 10) % 10);
-  *ptr++ = '0' + (val % 10);
+// Appends a fixed 3-digit or 4-digit zero-padded integer (0-999) using direct ASCII math.
+// Appends a fixed-width zero-padded integer with 3 or 4 digits using direct ASCII math.
+// If val < 1000, prints necessary leading zeroes
+static inline void appendPadded34(char*& ptr, int val) {
+  if (val >= 1000) {
+    *ptr++ = '0' + (val / 1000) % 10;
+    *ptr++ = '0' + (val / 100) % 10;
+    *ptr++ = '0' + (val / 10) % 10;
+    *ptr++ = '0' + (val % 10);
+  } else {
+    *ptr++ = '0' + (val / 100) % 10;
+    *ptr++ = '0' + (val / 10) % 10;
+    *ptr++ = '0' + (val % 10);
+  }
 }
 
 #endif

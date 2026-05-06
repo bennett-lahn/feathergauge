@@ -51,7 +51,9 @@ void setup() {
   configureLedWarmupIndicator();
   Serial.end();
   // Enabling serial port communication fundamentally breaks RTC timer interrupts (core function)
-  // It can be a useful debugging tool, but you should expect the program to behave incorrectly if enabled
+  // It can be a useful debugging tool, but you should expect the program to behave incorrectly if enabled.
+  // Causes the most problems powerDown sleep states, manifests as sudden cutoff in data or incorrect measuring
+  // period with millisecond values in the several thousands.
   // Serial.begin(SERIAL_BAUD_RATE);
   // while (!Serial);
   Wire.begin();
@@ -109,6 +111,7 @@ void setup() {
 
   if (Serial) Serial.println(F("Card Initialized."));
   char fileName[FILENAME_LENGTH];
+  // Temporary test mode: append to a known pre-existing file on the SD card.
   char serialNumber[16];
   EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber); 
   if (Serial) Serial.println(F("Read EEPROM"));
@@ -150,7 +153,6 @@ void setup() {
     Timer1.attachInterrupt(triggerSampling); // Every time Timer1 goes off, calls triggerSampling
     attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
   #endif
-  millisAtInterrupt = millis();
   #if BURST_SAMPLING
     timeAtBurstSwitch = currentDateTime;
     if (Serial) {
@@ -175,7 +177,7 @@ void loop() {
         #if BURST_SAMPLING_ONE_SAMPLE
           performSensorReading();
         #endif
-        DateTime endTime = rtc.now();
+        DateTime endTime = rtc.now(); // endTime taken before flush
         outputFile.flush();
         secondsSinceFlush = 0;
         if (Serial) {
@@ -349,7 +351,7 @@ void writeToOutputFile(DateTime now, int millisec, int32_t pressure,
   *ptr++ = ':';
   appendPadded2(ptr, (int)now.second());
   *ptr++ = '.';
-  appendPadded3(ptr, millisec);
+  appendPadded34(ptr, millisec);
   *ptr++ = ',';
 
   // Pressure: XXXX.X (fixed point, 1 decimal place, units of 0.1 mbar)
@@ -380,6 +382,35 @@ void writeToOutputFile(DateTime now, int millisec, int32_t pressure,
   *ptr++ = '\n';
 
   outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), static_cast<size_t>(ptr - rowBuffer));
+
+  // const size_t rowLength = static_cast<size_t>(ptr - rowBuffer);
+  // const uint32_t projectedSize = outputFile.size() + static_cast<uint32_t>(rowLength);
+
+  // if (projectedSize > FILE_ROLLOVER_SIZE_BYTES) {
+  //   outputFile.sync();
+  //   outputFile.close();
+
+  //   char fileName[FILENAME_LENGTH];
+  //   char serialNumber[SERIAL_NUMBER_LENGTH];
+  //   EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
+  //   makeFileName(fileName, serialNumber);
+
+  //   if (!outputFile.open(fileName, O_WRITE | O_AT_END)) {
+  //     if (Serial) Serial.println(F("error opening datalog-case2"));
+  //     error(ERROR_FILE_OPEN_FAILED);
+  //     return;
+  //   }
+
+  //   setFileTimestampOnce(outputFile);
+  //   outputFile.print(F("W.G. Num: "));
+  //   outputFile.print(serialNumber);
+  //   outputFile.print(',');
+  //   outputFile.print(F("Timestamp,Pressure [mbar],Temp [deg C],Battery [VDC]"));
+  //   outputFile.println();
+  //   outputFile.sync();
+  // }
+
+  // outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), rowLength);
 }
 
 // ===========================
@@ -393,8 +424,8 @@ void delayStartDeepSleepLoop() {
 
   // Configure RTC alarms
   rtc.clearAlarm(1);
-  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
   rtc.setAlarm1(startDateTime, DS3231_A1_Hour); // Alarm 1 triggers every day until start time
+  attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), deepSleepInterrupt, FALLING);
 
   // Don't go to sleep if start time has already passed
   DateTime now = rtc.now();
@@ -445,7 +476,7 @@ void delayStartDeepSleepLoop() {
 void enterBurstDeepSleep(DateTime endTime) {
   rtc.clearAlarm(1);
   DateTime now = rtc.now();
-  if (now.unixtime() > endTime.unixtime() + SLEEP_SECONDS) {
+  if (now.unixtime() >= endTime.unixtime() + SLEEP_SECONDS - 1) {
     timeAtBurstSwitch = now;
     resetTimer();
     rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
@@ -470,6 +501,7 @@ void enterBurstDeepSleep(DateTime endTime) {
 
   // ADC is OFF; ADC_ON setting prevents LowPower from turning it back on after waking up
   LowPower.powerDown(SLEEP_FOREVER, ADC_ON, BOD_OFF);
+  millisAtInterrupt = millis();
   delay(50);  // This delay is important to allow MCU components to initialize upon wake-up
   Wire.end();
   Wire.begin();
