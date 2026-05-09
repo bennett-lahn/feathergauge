@@ -383,34 +383,34 @@ void writeToOutputFile(DateTime now, int millisec, int32_t pressure,
 
   outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), static_cast<size_t>(ptr - rowBuffer));
 
-  // const size_t rowLength = static_cast<size_t>(ptr - rowBuffer);
-  // const uint32_t projectedSize = outputFile.size() + static_cast<uint32_t>(rowLength);
+  const size_t rowLength = static_cast<size_t>(ptr - rowBuffer);
+  const uint32_t projectedSize = outputFile.size() + static_cast<uint32_t>(rowLength);
 
-  // if (projectedSize > FILE_ROLLOVER_SIZE_BYTES) {
-  //   outputFile.sync();
-  //   outputFile.close();
+  if (projectedSize > FILE_ROLLOVER_SIZE_BYTES) {
+    outputFile.sync();
+    outputFile.close();
 
-  //   char fileName[FILENAME_LENGTH];
-  //   char serialNumber[SERIAL_NUMBER_LENGTH];
-  //   EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
-  //   makeFileName(fileName, serialNumber);
+    char fileName[FILENAME_LENGTH];
+    char serialNumber[SERIAL_NUMBER_LENGTH];
+    EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
+    makeFileName(fileName, serialNumber);
 
-  //   if (!outputFile.open(fileName, O_WRITE | O_AT_END)) {
-  //     if (Serial) Serial.println(F("error opening datalog-case2"));
-  //     error(ERROR_FILE_OPEN_FAILED);
-  //     return;
-  //   }
+    if (!outputFile.open(fileName, O_WRITE | O_CREAT | O_AT_END)) {
+      if (Serial) Serial.println(F("error opening datalog-case2"));
+      error(ERROR_FILE_OPEN_FAILED);
+      return;
+    }
 
-  //   setFileTimestampOnce(outputFile);
-  //   outputFile.print(F("W.G. Num: "));
-  //   outputFile.print(serialNumber);
-  //   outputFile.print(',');
-  //   outputFile.print(F("Timestamp,Pressure [mbar],Temp [deg C],Battery [VDC]"));
-  //   outputFile.println();
-  //   outputFile.sync();
-  // }
+    setFileTimestampOnce(outputFile);
+    outputFile.print(F("W.G. Num: "));
+    outputFile.print(serialNumber);
+    outputFile.print(',');
+    outputFile.print(F("Timestamp,Pressure [mbar],Temp [deg C],Battery [VDC]"));
+    outputFile.println();
+    outputFile.sync();
+  }
 
-  // outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), rowLength);
+  outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), rowLength);
 }
 
 // ===========================
