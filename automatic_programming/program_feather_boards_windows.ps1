@@ -423,7 +423,7 @@ function Wait-ForPortAtLocation {
         # only returns once a genuinely new enumeration has appeared.
         [string]$ExcludeProductId = $null,
 
-        [int]$TimeoutSeconds = 5,
+        [int]$TimeoutSeconds = 10,
         [int]$PollIntervalMs = 500
     )
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -565,6 +565,7 @@ function Invoke-ProgramBoard {
     # Wait for the sketch to enumerate (board resets after programming)
     Write-Detail "Waiting for sketch to enumerate at location $locationPath..."
     Start-Sleep -Seconds 2    # give time for arduino to exit bootloader and enumerate
+    # Don't move on until COM port has dropped
     $sketchPort = Wait-ForPortAtLocation -TargetLocationPath $locationPath `
                       -ExcludeProductId $bootloaderPid
     if (-not $sketchPort) {
@@ -698,7 +699,7 @@ function Read-AndValidateEepromSerial {
             Write-Err "No EEPROM value read from $Port"
             return $false
         }
-        if ($eepromValue -match '^[1-9][0-9]*$') {
+        if ($eepromValue -match '^[0-9][0-9]*$') {
             Write-Success "EEPROM value detected: $eepromValue"
             return $true
         }
