@@ -39,8 +39,7 @@ param(
 # Enforce Standard User Execution
 # ---------------------------------------------------------------------------
 
-$isAdmin = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent().IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($isAdmin) {
     Write-Host "[ERROR] Execution halted. This script must NOT be run as an Administrator." -ForegroundColor Red
     Write-Host "Winget portable package symlinks will fail if installed across privilege contexts." -ForegroundColor Yellow
@@ -164,7 +163,7 @@ function Install-WingetPackage {
         return $false
     }
 
-    $wingetOutput = winget install --id $PackageId --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
+    $wingetOutput = winget install --id $PackageId --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
     $wingetOutput | ForEach-Object { Write-Detail "$_" }
 
     # 0x8a15000f means the winget source catalog is stale or corrupt.
