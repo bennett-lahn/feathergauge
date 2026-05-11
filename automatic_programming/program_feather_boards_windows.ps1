@@ -36,6 +36,19 @@ param(
 )
 
 # ---------------------------------------------------------------------------
+# Enforce Standard User Execution
+# ---------------------------------------------------------------------------
+
+$isAdmin = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent().IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($isAdmin) {
+    Write-Host "[ERROR] Execution halted. This script must NOT be run as an Administrator." -ForegroundColor Red
+    Write-Host "Winget portable package symlinks will fail if installed across privilege contexts." -ForegroundColor Yellow
+    Write-Host "Please close this window and execute from a standard user prompt." -ForegroundColor Yellow
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
@@ -193,25 +206,6 @@ function Install-Dependencies {
 }
 
 # ---------------------------------------------------------------------------
-# Install-CoreLibraries
-#
-# Installs standard Arduino libraries required by the feathergauge sketches
-# using the arduino-cli library manager. Currently installs: SD.
-# ---------------------------------------------------------------------------
-function Install-CoreLibraries {
-    Write-Detail "Ensuring core libraries are installed (SD)..."
-    foreach ($lib in @("SD")) {
-        $libOutput = arduino-cli lib install $lib --config-file $Script:ArduinoConfigFile 2>&1
-        $libOutput | ForEach-Object { Write-Detail "$_" }
-        if ($LASTEXITCODE -eq 0) {
-            Write-Detail "Library installed: $lib"
-        } else {
-            Write-Warn "Failed to install library: $lib"
-        }
-    }
-}
-
-# ---------------------------------------------------------------------------
 # Install-LocalLibraries
 #
 # Installs custom libraries from the project's libraries\ directory by
@@ -291,7 +285,6 @@ library:
     $coreOutput = arduino-cli core install adafruit:avr --config-file $Script:ArduinoConfigFile 2>&1
     $coreOutput | ForEach-Object { Write-Detail "$_" }
 
-    Install-CoreLibraries
     Install-LocalLibraries
 
     Write-Success "Arduino CLI sandbox setup complete"
@@ -710,8 +703,8 @@ function Read-AndValidateEepromSerial {
         $sp = New-Object System.IO.Ports.SerialPort($Port, 57600)
         $sp.NewLine     = "`n"
         $sp.ReadTimeout = 500
+        $sp.DtrEnable = $true
         $sp.Open()
-        Start-Sleep -Seconds 2    # wait for Arduino to finish boot/init
 
         $eepromValue = $null
         $deadline    = (Get-Date).AddSeconds($SerialTimeout)
