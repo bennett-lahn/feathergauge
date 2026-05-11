@@ -24,7 +24,7 @@ if not exist "%PS_SCRIPT%" (
 )
 
 :: Launch PowerShell, bypass the execution policy, run script
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS_SCRIPT%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS_SCRIPT%" -Debug
 
 :: Catch the exit code from PowerShell
 if %ERRORLEVEL% NEQ 0 (
