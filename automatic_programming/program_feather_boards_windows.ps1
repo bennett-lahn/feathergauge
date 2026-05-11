@@ -923,6 +923,20 @@ function Main {
         exit 1
     }
 
+    # Trigger the bootloader on each discovered device sequentially, with a
+    # 2-second delay between devices. After the last device, wait 9 seconds
+    # before continuing so all boards have time to fully enumerate.
+    $ports = @($Script:UsbPortMap.Values)
+    Write-Info "Triggering bootloader on $($ports.Count) device(s)..."
+    for ($i = 0; $i -lt $ports.Count; $i++) {
+        Invoke-BootloaderReset $ports[$i]
+        if ($i -lt $ports.Count - 1) {
+            Start-Sleep -Seconds 2
+        }
+    }
+    Write-Detail "All bootloaders triggered - waiting 9 seconds for devices to enumerate..."
+    Start-Sleep -Seconds 8
+
     $success = Invoke-ProgramBoards @($Script:UsbPortMap.Values)
 
     if ($success) {
