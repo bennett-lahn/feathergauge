@@ -46,6 +46,7 @@ ENV/
 env.bak/
 venv.bak/
 data_analysis/
+arduino_sandbox/
 
 # IDE files
 .vscode/
@@ -53,6 +54,7 @@ data_analysis/
 *.swp
 *.swo
 *~
+arduino-cli.yaml
 
 # OS generated files
 .DS_Store

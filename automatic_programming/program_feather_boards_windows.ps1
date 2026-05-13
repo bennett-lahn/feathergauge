@@ -6,7 +6,9 @@
 # arduino-cli and avrdude are installed automatically via winget if missing.
 # All serial communication uses .NET System.IO.Ports.SerialPort directly.
 #
-# Caution: this script overwrites the current arduino-cli config settings.
+# arduino-cli runs in an isolated sandbox (arduino_sandbox\) inside the
+# automatic_programming\ folder. The host computer's global Arduino
+# installation is never touched. Delete arduino_sandbox\ to reset the env.
 #
 # Usage: .\program_feather_boards_windows.ps1 [-SkipRtc] [-Debug] [-Help]
 #        .\program_feather_boards_windows.ps1 -SketchDir <path> -OutputDir <path>
@@ -34,6 +36,18 @@ param(
 )
 
 # ---------------------------------------------------------------------------
+# Enforce Standard User Execution
+# ---------------------------------------------------------------------------
+
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) {
+    Write-Host "[ERROR] Execution halted. This script must NOT be run as an Administrator." -ForegroundColor Red
+    Write-Host "Winget portable package symlinks will fail if installed across privilege contexts." -ForegroundColor Yellow
+    Write-Host "Please close this window and execute from a standard user prompt." -ForegroundColor Yellow
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
@@ -58,6 +72,14 @@ $BoardFqbn            = "adafruit:avr:feather32u4"
 
 # Compiled binaries are written to a subdirectory inside automatic_programming\
 $CompiledSketchDir    = if ($OutputDir) { $OutputDir } else { Join-Path $ScriptDir "compiled_sketches" }
+
+# Isolated arduino-cli environment - all cores, tools, and libraries are
+# installed into arduino_sandbox\ inside automatic_programming\ and are
+# completely invisible to the host computer's global Arduino installation.
+$SandboxDir              = Join-Path $ScriptDir "arduino_sandbox"
+$SandboxData             = Join-Path $SandboxDir "data"
+$SandboxUser             = Join-Path $SandboxDir "user"
+$Script:ArduinoConfigFile = Join-Path $ScriptDir "arduino-cli.yaml"
 
 # Log file is written inside automatic_programming\logs\
 $LogsDir = Join-Path $ScriptDir "logs"
@@ -116,6 +138,10 @@ function Update-SessionPath {
 # Checks whether $Command is already on the PATH. If not, installs the winget
 # package identified by $PackageId. Returns $true on success, $false on
 # failure (missing winget, install error, or command still not found after).
+#
+# If winget exits with error 0x8a15000f (stale or corrupt source catalog),
+# the function repairs the source by applying the latest source.msix package
+# from the winget CDN, then retries the install once.
 # ---------------------------------------------------------------------------
 function Install-WingetPackage {
     param(
@@ -137,8 +163,15 @@ function Install-WingetPackage {
         return $false
     }
 
-    $wingetOutput = winget install --id $PackageId --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
-    if ($Script:DebugMode) {
+    $wingetOutput = winget install --id $PackageId --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
+    $wingetOutput | ForEach-Object { Write-Detail "$_" }
+
+    # 0x8a15000f means the winget source catalog is stale or corrupt.
+    # Repair it by re-applying the source package, then retry once.
+    if ($LASTEXITCODE -ne 0 -and ($wingetOutput -join ' ') -match '0x8a15000f') {
+        Write-Warn "winget source error (0x8a15000f) detected - repairing source and retrying..."
+        Add-AppxPackage -Path "https://cdn.winget.microsoft.com/cache/source.msix" -ErrorAction SilentlyContinue
+        $wingetOutput = winget install --id $PackageId --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
         $wingetOutput | ForEach-Object { Write-Detail "$_" }
     }
 
@@ -172,24 +205,6 @@ function Install-Dependencies {
 }
 
 # ---------------------------------------------------------------------------
-# Install-CoreLibraries
-#
-# Installs standard Arduino libraries required by the feathergauge sketches
-# using the arduino-cli library manager. Currently installs: SD.
-# ---------------------------------------------------------------------------
-function Install-CoreLibraries {
-    Write-Detail "Ensuring core libraries are installed (SD)..."
-    foreach ($lib in @("SD")) {
-        arduino-cli lib install $lib 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Detail "Library installed: $lib"
-        } else {
-            Write-Warn "Failed to install library: $lib"
-        }
-    }
-}
-
-# ---------------------------------------------------------------------------
 # Install-LocalLibraries
 #
 # Installs custom libraries from the project's libraries\ directory by
@@ -218,7 +233,8 @@ function Install-LocalLibraries {
 
     foreach ($zip in $zips) {
         Write-Detail "Installing library: $($zip.Name)"
-        arduino-cli lib install --zip-path $zip.FullName 2>&1 | Out-Null
+        $zipOutput = arduino-cli lib install --zip-path $zip.FullName --config-file $Script:ArduinoConfigFile 2>&1
+        $zipOutput | ForEach-Object { Write-Detail "$_" }
         if ($LASTEXITCODE -eq 0) {
             Write-Detail "Installed: $($zip.Name)"
         } else {
@@ -230,33 +246,47 @@ function Install-LocalLibraries {
 # ---------------------------------------------------------------------------
 # Setup-ArduinoCli
 #
-# Configures arduino-cli for this project:
-#   - Adds the Adafruit board manager URL so adafruit:avr can be found
-#   - Enables "unsafe" (zip) library installs
+# Configures an isolated arduino-cli environment for this project:
+#   - Creates arduino_sandbox\ inside automatic_programming\ with data\ and
+#     user\ subdirectories that receive all downloaded toolchains and libs
+#   - Writes a local arduino-cli.yaml pointing every CLI operation into the
+#     sandbox - the host computer's global Arduino installation is untouched
 #   - Installs the arduino:avr core (required dependency of adafruit:avr)
 #   - Installs the adafruit:avr core
-#   - Installs core and local libraries
+#   - Installs core and local libraries into the sandbox
 # ---------------------------------------------------------------------------
 function Setup-ArduinoCli {
-    Write-Info "Setting up Arduino CLI..."
+    Write-Info "Setting up Arduino CLI sandbox environment..."
 
-    $configFile = Join-Path $env:APPDATA "Arduino15\arduino-cli.yaml"
-    if (-not (Test-Path $configFile)) {
-        arduino-cli config init --overwrite
-    }
+    New-Item -ItemType Directory -Path $SandboxData -Force | Out-Null
+    New-Item -ItemType Directory -Path $SandboxUser -Force | Out-Null
 
-    arduino-cli config set board_manager.additional_urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json 2>&1 | Out-Null
-    arduino-cli config set library.enable_unsafe_install true 2>&1 | Out-Null
-    $indexOutput = arduino-cli core update-index 2>&1
-    if ($Script:DebugMode) { $indexOutput | ForEach-Object { Write-Detail "$_" } }
-    arduino-cli core install arduino:avr 2>&1 | Out-Null   # dependency of adafruit:avr
-    $coreOutput = arduino-cli core install adafruit:avr 2>&1
-    if ($Script:DebugMode) { $coreOutput | ForEach-Object { Write-Detail "$_" } }
+    # Write the local config file; all subsequent arduino-cli calls pass
+    # --config-file to ensure every operation stays inside the sandbox.
+    $yamlContent = @"
+board_manager:
+  additional_urls:
+    - https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+directories:
+  data: $SandboxData
+  downloads: $(Join-Path $SandboxData "staging")
+  user: $SandboxUser
+library:
+  enable_unsafe_install: true
+"@
+    Set-Content -Path $Script:ArduinoConfigFile -Value $yamlContent
+    Write-Detail "Wrote sandbox config: $Script:ArduinoConfigFile"
 
-    Install-CoreLibraries
+    $indexOutput = arduino-cli core update-index --config-file $Script:ArduinoConfigFile 2>&1
+    $indexOutput | ForEach-Object { Write-Detail "$_" }
+    $avrCoreOutput = arduino-cli core install arduino:avr --config-file $Script:ArduinoConfigFile 2>&1
+    $avrCoreOutput | ForEach-Object { Write-Detail "$_" }
+    $coreOutput = arduino-cli core install adafruit:avr --config-file $Script:ArduinoConfigFile 2>&1
+    $coreOutput | ForEach-Object { Write-Detail "$_" }
+
     Install-LocalLibraries
 
-    Write-Success "Arduino CLI setup complete"
+    Write-Success "Arduino CLI sandbox setup complete"
 }
 
 # ---------------------------------------------------------------------------
@@ -299,10 +329,8 @@ function Invoke-CompileSketch {
         return $false
     }
 
-    $compileOutput = arduino-cli compile --fqbn $BoardFqbn --output-dir $CompiledSketchDir $SketchPath 2>&1
-    if ($Script:DebugMode) {
-        $compileOutput | ForEach-Object { Write-Detail "$_" }
-    }
+    $compileOutput = arduino-cli compile --fqbn $BoardFqbn --output-dir $CompiledSketchDir $SketchPath --config-file $Script:ArduinoConfigFile 2>&1
+    $compileOutput | ForEach-Object { Write-Detail "$_" }
 
     if ($LASTEXITCODE -eq 0) {
         Write-Success "$Label sketch compiled successfully"
@@ -423,7 +451,7 @@ function Wait-ForPortAtLocation {
         # only returns once a genuinely new enumeration has appeared.
         [string]$ExcludeProductId = $null,
 
-        [int]$TimeoutSeconds = 5,
+        [int]$TimeoutSeconds = 10,
         [int]$PollIntervalMs = 500
     )
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -553,9 +581,7 @@ function Invoke-ProgramBoard {
     # \\.\COMx notation is required for COM10+ on Windows
     $avrdudeConf = Join-Path $ScriptDir "avrdude.conf"
     $avrOutput = avrdude -p atmega32u4 -c avr109 -P "\\.\$bootloaderPort" -b 57600 -D -U "flash:w:${HexFile}:i" 2>&1
-    if ($Script:DebugMode) {
-        $avrOutput | ForEach-Object { Write-Detail "$_" }
-    }
+    $avrOutput | ForEach-Object { Write-Detail "$_" }
 
     if ($LASTEXITCODE -ne 0) {
         Write-Err "avrdude failed for board $BoardNum"
@@ -565,6 +591,7 @@ function Invoke-ProgramBoard {
     # Wait for the sketch to enumerate (board resets after programming)
     Write-Detail "Waiting for sketch to enumerate at location $locationPath..."
     Start-Sleep -Seconds 2    # give time for arduino to exit bootloader and enumerate
+    # Don't move on until COM port has dropped
     $sketchPort = Wait-ForPortAtLocation -TargetLocationPath $locationPath `
                       -ExcludeProductId $bootloaderPid
     if (-not $sketchPort) {
@@ -675,8 +702,8 @@ function Read-AndValidateEepromSerial {
         $sp = New-Object System.IO.Ports.SerialPort($Port, 57600)
         $sp.NewLine     = "`n"
         $sp.ReadTimeout = 500
+        $sp.DtrEnable = $true
         $sp.Open()
-        Start-Sleep -Seconds 2    # wait for Arduino to finish boot/init
 
         $eepromValue = $null
         $deadline    = (Get-Date).AddSeconds($SerialTimeout)
@@ -698,7 +725,7 @@ function Read-AndValidateEepromSerial {
             Write-Err "No EEPROM value read from $Port"
             return $false
         }
-        if ($eepromValue -match '^[1-9][0-9]*$') {
+        if ($eepromValue -match '^[0-9][0-9]*$') {
             Write-Success "EEPROM value detected: $eepromValue"
             return $true
         }
@@ -874,7 +901,9 @@ function Show-Usage {
     Write-Host "       Stage 2 - Flash the main feathergauge_code firmware" -ForegroundColor White
     Write-Host "  Use -SkipRtc to bypass stages 0 and 1." -ForegroundColor White
     Write-Host ""
-    Write-Host "CAUTION: This script overwrites the current arduino-cli config settings." -ForegroundColor Yellow
+    Write-Host "NOTE: arduino-cli runs in an isolated sandbox (arduino_sandbox\)." -ForegroundColor Yellow
+    Write-Host "      The host computer's global Arduino installation is never modified." -ForegroundColor Yellow
+    Write-Host "      Delete arduino_sandbox\ to reset the environment." -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -922,6 +951,27 @@ function Main {
         exit 1
     }
 
+    # Trigger the bootloader on each discovered device sequentially, with a
+    # 2-second delay between devices. After the last device, wait 9 seconds
+    # before continuing so all boards have time to fully enumerate.
+    $ports = @($Script:UsbPortMap.Values)
+    Write-Info "Triggering bootloader on $($ports.Count) device(s)..."
+    for ($i = 0; $i -lt $ports.Count; $i++) {
+        Invoke-BootloaderReset $ports[$i]
+        if ($i -lt $ports.Count - 1) {
+            Start-Sleep -Seconds 2
+        }
+    }
+    Write-Detail "All bootloaders triggered - waiting 10 seconds for devices to enumerate..."
+    Start-Sleep -Seconds 12
+
+    Write-Info "Re-scanning for devices after bootloader exit..."
+    $Script:UsbPortMap = Build-UsbPortMap
+    if ($Script:UsbPortMap.Count -eq 0) {
+        Write-Err "No Adafruit devices found after bootloader exit. Exiting."
+        exit 1
+    }
+
     $success = Invoke-ProgramBoards @($Script:UsbPortMap.Values)
 
     if ($success) {
@@ -934,3 +984,5 @@ function Main {
 }
 
 Main
+
+# Instead of using one loop, retry each wave gauge if enumeration fails

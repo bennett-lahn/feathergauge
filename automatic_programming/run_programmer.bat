@@ -1,9 +1,9 @@
 @echo off
-TITLE Feather Firmware Updater
+TITLE Feather Wave Gauge Programmer
 COLOR 0B
 
 echo ===================================================
-echo     Feather Gauge Firmware Programmer
+echo     Feather Wave Gauge Programmer
 echo ===================================================
 echo.
 echo Initializing programmer... Please keep this window open.
