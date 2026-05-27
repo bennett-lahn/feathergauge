@@ -56,8 +56,8 @@ Data is logged to an onboard microSD card in CSV format for easy post-processing
 
 ### Key Components
 
-- **`Sketchbooks/feathergauge_code/`**: The primary Arduino sketch for data logging. Configure sampling parameters in `user_config.h` before uploading.
-- **`Sketchbooks/rtc_setup/`**: Required utility to synchronize the real-time clock before use (unless using automatic programming).
+- **`sketchbooks/feathergauge_code/`**: The primary Arduino sketch for data logging. Configure sampling parameters in `user_config.h` before uploading.
+- **`sketchbooks/rtc_setup/`**: Required utility to synchronize the real-time clock before use (unless using automatic programming).
 - **`libraries/`**: All necessary Arduino libraries packaged as ZIP files.
 - **`automatic_programming/`**: Tools for programming multiple wave gauges efficiently (Windows only).
 - **`build_info/`**: Hardware assembly guide, bill of materials, and 3D models for internal components.
@@ -128,7 +128,7 @@ The RTC must be set for proper timestamping. This is a one-time setup unless the
 
 **Setting the Clock:**
 
-1. Open `Sketchbooks/rtc_setup/rtc_setup.ino` in Arduino IDE
+1. Open `sketchbooks/rtc_setup/rtc_setup.ino` in Arduino IDE
 2. Ensure the correct board and port are selected
 3. Click **Upload**
    - If upload hangs on "Waiting for upload port," press the **small black reset button** on the board
@@ -148,7 +148,7 @@ The RTC must be set for proper timestamping. This is a one-time setup unless the
 2. Insert microSD card into SD card slot
 3. Connect battery (if applicable)
 4. Connect USB cable to computer
-5. Open `Sketchbooks/feathergauge_code/feathergauge_code.ino`
+5. Open `sketchbooks/feathergauge_code/feathergauge_code.ino`
 6. Configure sampling parameters in `user_config.h` (see [Configuration Options](#configuration-options))
 7. Click **Upload**
    - If upload hangs, press the **reset button** immediately after clicking upload to enter the bootloader.

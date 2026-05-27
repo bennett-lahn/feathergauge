@@ -61,9 +61,9 @@ $ScriptDir            = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
 $ProjectDir           = Split-Path $ScriptDir -Parent
 
 # Sketch source directories (relative to the project root)
-$ArduinoSketchDir     = if ($SketchDir) { $SketchDir } else { Join-Path $ProjectDir "Sketchbooks\feathergauge_code" }
-$RtcSetupSketchDir    = Join-Path $ProjectDir "Sketchbooks\rtc_setup"
-$EepromTestSketchDir  = Join-Path $ProjectDir "Sketchbooks\eeprom_test"
+$ArduinoSketchDir     = if ($SketchDir) { $SketchDir } else { Join-Path $ProjectDir "sketchbooks\feathergauge_code" }
+$RtcSetupSketchDir    = Join-Path $ProjectDir "sketchbooks\rtc_setup"
+$EepromTestSketchDir  = Join-Path $ProjectDir "sketchbooks\eeprom_test"
 
 # Local library zip files to install (see Install-LocalLibraries)
 $LibraryConfigDir     = Join-Path $ProjectDir "libraries"
@@ -877,16 +877,16 @@ function Show-Usage {
     Write-Host ""
     Write-Host "Options:" -ForegroundColor Yellow
     Write-Host "  -Help                    Show this help message" -ForegroundColor White
-    Write-Host "  -SketchDir  <path>       Main sketch directory (default: Sketchbooks\feathergauge_code)" -ForegroundColor White
+    Write-Host "  -SketchDir  <path>       Main sketch directory (default: sketchbooks\feathergauge_code)" -ForegroundColor White
     Write-Host "  -OutputDir  <path>       Compiled binary output directory (default: automatic_programming\compiled_sketches)" -ForegroundColor White
     Write-Host "  -LogFilePath <path>      Log file path (default: automatic_programming\programming_log_<timestamp>.log)" -ForegroundColor White
     Write-Host "  -SkipRtc                 Skip EEPROM test and RTC sync; flash main sketch only" -ForegroundColor White
     Write-Host "  -Debug                   Print verbose output to the console (full output is always logged)" -ForegroundColor White
     Write-Host ""
     Write-Host "Expected project layout (relative to the repository root):" -ForegroundColor Yellow
-    Write-Host "  Sketchbooks\feathergauge_code\feathergauge_code.ino  (main firmware)" -ForegroundColor White
-    Write-Host "  Sketchbooks\rtc_setup\rtc_setup.ino                  (RTC sync sketch)" -ForegroundColor White
-    Write-Host "  Sketchbooks\eeprom_test\eeprom_test.ino              (EEPROM validation sketch)" -ForegroundColor White
+    Write-Host "  sketchbooks\feathergauge_code\feathergauge_code.ino  (main firmware)" -ForegroundColor White
+    Write-Host "  sketchbooks\rtc_setup\rtc_setup.ino                  (RTC sync sketch)" -ForegroundColor White
+    Write-Host "  sketchbooks\eeprom_test\eeprom_test.ino              (EEPROM validation sketch)" -ForegroundColor White
     Write-Host "  libraries\*.zip                                       (custom library archives)" -ForegroundColor White
     Write-Host ""
     Write-Host "The script will:" -ForegroundColor Yellow
