@@ -158,8 +158,8 @@ extern uint8_t secondsSinceFlush;
 extern volatile bool samplingFlag;
 extern volatile bool resetTimerFlag;
 
-// Number of milliseconds at last 1 Hz interrupt from RTC
-extern unsigned long millisAtInterrupt;
+// Number of milliseconds at last 1 Hz interrupt from RTC; read/write from main must use noInterrupts()/interrupts()
+extern volatile unsigned long millisAtInterrupt;
 
 // # of times the LED should be toggled (switched between on/off) during the start-up verification phase
 extern uint8_t ledWarmupToggleTarget;
@@ -180,7 +180,7 @@ extern bool ledWarmupManualPulsePending;
  * Inputs:
  *   - None (uses globals: currentDateTime, millisAtInterrupt, currentVoltage)
  * Usage: Called when `samplingFlag` is set or in one-sample burst mode.
- * Note: currentDateTime is read with interrupts disabled to avoid races with resetTimerInterrupt().
+ * Note: currentDateTime and millisAtInterrupt are read with interrupts disabled to avoid races with resetTimerInterrupt().
  */
 void performSensorReading();
 
@@ -227,13 +227,13 @@ void setFileTimestampOnce(File32& file);
  * Purpose: Append one CSV line to the open SD file using fixed-point values and pointer arithmetic formatting.
  * Inputs:
  *   - now: DateTime - timestamp (date and time to seconds).
- *   - millisec: int - millisecond offset within the second (0..999).
+ *   - millisec: uint16_t - millisecond offset within the second (0..999, or 1000+ for overrun).
  *   - pressure: int32_t - pressure in tenths of mbar (XXXX.X).
  *   - temperature: int32_t - temperature in hundredths of degrees C (XX.XX).
  *   - batteryVoltage: int16_t - battery voltage in hundredths of volts (X.XX).
  * Usage: Call to write sensor reading to file.
  */
-void writeToOutputFile(DateTime now, int millisec, int32_t pressure, int32_t temperature, int16_t batteryVoltage);
+void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure, int32_t temperature, int16_t batteryVoltage);
 
 /**
  * enterDelayDeepSleep
@@ -297,7 +297,7 @@ void triggerSampling();
  * resetTimerInterrupt (ISR context)
  * Purpose: Flag main loop to resynchronize timers on each RTC second tick. Also updates 
  * millisAtInterrupt and pre-emptively increments currentDateTime by one second, pending actual
- * I2C correction in resetTimer(). Main code must read currentDateTime with interrupts disabled.
+ * I2C correction in resetTimer(). Main code must read/write currentDateTime and millisAtInterrupt with interrupts disabled.
  * 
  * Inputs: None
  */
@@ -337,10 +337,10 @@ static inline void appendPadded2(char*& ptr, int val) {
   *ptr++ = '0' + (val % 10);
 }
 
-// Appends a fixed 3-digit or 4-digit zero-padded integer (0-999) using direct ASCII math.
 // Appends a fixed-width zero-padded integer with 3 or 4 digits using direct ASCII math.
-// If val < 1000, prints necessary leading zeroes
-static inline void appendPadded34(char*& ptr, int val) {
+// If val < 1000, prints necessary leading zeroes. Parameter is uint16_t to avoid AVR 16-bit
+// int sign conversion when millisec values exceed INT16_MAX.
+static inline void appendPadded34(char*& ptr, uint16_t val) {
   if (val >= 1000) {
     *ptr++ = '0' + (val / 1000) % 10;
     *ptr++ = '0' + (val / 100) % 10;

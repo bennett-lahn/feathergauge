@@ -28,8 +28,8 @@ volatile bool resetTimerFlag = false;
 // Number of seconds elapsed since the last SD flush (incremented in resetTimer())
 uint8_t secondsSinceFlush = 0;
 
-// Number of milliseconds at last 1 Hz interrupt from RTC
-unsigned long millisAtInterrupt = 0; 
+// Number of milliseconds at last 1 Hz interrupt from RTC; read/write from main must use noInterrupts()/interrupts()
+  volatile unsigned long millisAtInterrupt = 0;
 
 // # of times the LED should be toggled (on->off = 1 toggle) during the start-up verification phase
 uint8_t ledWarmupToggleTarget = 0;
@@ -184,15 +184,17 @@ void performSensorReading() {
                                 &currentTemperature);
 
   updateLedWarmupIndicator();
-  uint16_t millisec = millis() - millisAtInterrupt;
+  noInterrupts();
+  unsigned long nowMs = millis();
+  unsigned long irqMillis = millisAtInterrupt;
+  DateTime date = currentDateTime;
+  interrupts();
+  uint16_t millisec = (uint16_t)(nowMs - irqMillis);
 
   // This eliminates 99% of cases where the millisecond timer and RTC are exactly in sync, 
   // leading to millisecond overflow, while maintaining an error of +/- 1ms
   // An overflow more than 1000 is untouched so it can be discarded in postprocessing
   millisec = (millisec == 1000) ? 999 : millisec;
-  noInterrupts();
-  DateTime date = currentDateTime;
-  interrupts();
   writeToOutputFile(date, millisec, currentPressure, currentTemperature, currentVoltage);
 }
 
@@ -212,7 +214,6 @@ int16_t getBatteryVoltage() {
 void resetTimer() {
   secondsSinceFlush++;
   power_adc_enable();
-  // millisAtInterrupt = millis();
   DateTime now = rtc.now();
   noInterrupts();
   currentDateTime = now;
@@ -271,7 +272,7 @@ void setFileTimestampOnce(File32& file) {
                  now.hour(), now.minute(), now.second());
 }
 
-void writeToOutputFile(DateTime now, int millisec, int32_t pressure, 
+void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure, 
                        int32_t temperature, int16_t batteryVoltage) {
   char rowBuffer[ROW_BUFFER_SIZE];
   char* ptr = rowBuffer;
@@ -434,7 +435,9 @@ void enterBurstDeepSleep(DateTime endTime) {
 
   // ADC is OFF; ADC_ON setting prevents LowPower from turning it back on after waking up
   LowPower.powerDown(SLEEP_FOREVER, ADC_ON, BOD_OFF);
+  noInterrupts();
   millisAtInterrupt = millis();
+  interrupts();
   delay(50);  // This delay is important to allow MCU components to initialize upon wake-up
   Wire.end();
   Wire.begin();
