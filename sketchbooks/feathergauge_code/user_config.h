@@ -39,12 +39,6 @@ constexpr uint32_t SLEEP_SECONDS = 10;  // Number of seconds to sleep in burst s
   const int START_DAY    = 19;   // Day to start sampling
   const int START_HOUR   = 10;   // Hour to start sampling (24-hr format)
   const int START_MINUTE = 0;    // Minute to start sampling
-#else
-  const int START_YEAR   = 2000; // DO NOT MODIFY
-  const int START_MONTH  = 1;    // DO NOT MODIFY
-  const int START_DAY    = 1;    // DO NOT MODIFY
-  const int START_HOUR   = 12;   // DO NOT MODIFY
-  const int START_MINUTE = 0;    // DO NOT MODIFY
 #endif
 
 #endif
