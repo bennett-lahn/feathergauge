@@ -130,8 +130,17 @@ constexpr uint8_t SERIAL_NUMBER_ADDRESS          = 0;         // EEPROM address 
 // ===========================
 // GLOBAL VARIABLE DECLARATIONS
 // ===========================
+
+// Declare start variables if not declared in user_config.h so that code compiles even if delay start
+// isn't used
 #if DELAY_START
   extern bool hasStarted;
+#else
+  const int START_YEAR   = 2000;
+  const int START_MONTH  = 1;
+  const int START_DAY    = 1;
+  const int START_HOUR   = 12;
+  const int START_MINUTE = 0;
 #endif
 
 #if USE_NEW_SENSOR
