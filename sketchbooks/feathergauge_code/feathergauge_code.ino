@@ -321,8 +321,6 @@ void writeToOutputFile(DateTime now, int millisec, int32_t pressure,
   *ptr++ = '\r';
   *ptr++ = '\n';
 
-  outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), static_cast<size_t>(ptr - rowBuffer));
-
   const size_t rowLength = static_cast<size_t>(ptr - rowBuffer);
   const uint32_t projectedSize = outputFile.size() + static_cast<uint32_t>(rowLength);
 
