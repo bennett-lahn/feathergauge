@@ -18,7 +18,7 @@ SdFat32 sd;
 File32 outputFile;           // Used to open, write to, and close files on the SD card
 
 DateTime timeAtBurstSwitch;  // Time burst switched between sleep and record
-DateTime currentDateTime;    // Time of current second
+DateTime currentDateTime;    // Time of current second; read/write from main must use noInterrupts()/interrupts()
 int16_t currentVoltage;      // Voltage of battery, updated every second
 
 // Sampling flag for ISR to main loop communication
@@ -50,12 +50,10 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   configureLedWarmupIndicator();
   Serial.end();
-  // Enabling serial port communication fundamentally breaks RTC timer interrupts (core function)
-  // It can be a useful debugging tool, but you should expect the program to behave incorrectly if enabled.
-  // Causes the most problems powerDown sleep states, manifests as sudden cutoff in data or incorrect measuring
-  // period with millisecond values in the several thousands.
-  // Serial.begin(SERIAL_BAUD_RATE);
-  // while (!Serial);
+  // !!! WARNING !!!
+  // DO NOT enable serial communication. It fundamentally breaks RTC timer interrupts, which is a core
+  // function of this program. Manifests as sudden data cutoff or incorrect sampling periods (millisecond
+  // values in the several thousands). Most severe during powerDown sleep states.
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
 
@@ -64,7 +62,6 @@ void setup() {
   pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
   
   if (!rtc.begin()) {
-    if (Serial) Serial.println(F("RTC Failed to initialize"));
     error(2);
     return;
   }
@@ -81,47 +78,26 @@ void setup() {
     // **Relying on this to set the correct time is a bad idea**, but it's better than 
     // no date at all
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    if (Serial) {
-      DateTime setTime = rtc.now();
-      Serial.print(F("RTC time set to: "));
-      Serial.print(setTime.year());
-      Serial.print('/');
-      Serial.print(setTime.month());
-      Serial.print('/');
-      Serial.print(setTime.day());
-      Serial.print(' ');
-      Serial.print(setTime.hour());
-      Serial.print(':');
-      Serial.print(setTime.minute());
-      Serial.print(':');
-      Serial.println(setTime.second());
-    }
   }
   
   pressureSensor.reset();
   pressureSensor.begin();
 
-  if (Serial) Serial.print(F("Initializing SD card..."));
-  
   if (!sd.begin(SD_CARD_SELECT_PIN, SPI_HALF_SPEED)) { 
-    if (Serial) Serial.println(F("Card Failed or Not Present"));
     error(ERROR_SD_CARD_FAILED);
     return;
   }
 
-  if (Serial) Serial.println(F("Card Initialized."));
   char fileName[FILENAME_LENGTH];
   // Temporary test mode: append to a known pre-existing file on the SD card.
   char serialNumber[16];
   EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber); 
-  if (Serial) Serial.println(F("Read EEPROM"));
   makeFileName(fileName, serialNumber);
   
   outputFile.open(fileName, O_WRITE | O_CREAT | O_AT_END); // Opens .csv file
 
   if (outputFile) {
     setFileTimestampOnce(outputFile); // Set file metadata once; do not register a global callback
-    if (Serial) Serial.println(F("File opened"));
     outputFile.print(F("W.G. Num: "));
     outputFile.print(serialNumber);
     outputFile.print(',');
@@ -129,7 +105,6 @@ void setup() {
     outputFile.println();
     outputFile.sync();
   } else {
-    if (Serial) Serial.println(F("error opening datalog-case1"));
     error(ERROR_FILE_OPEN_FAILED);
   }
 
@@ -147,22 +122,16 @@ void setup() {
   #endif
   // Set alarm to go off 1 second from now, DS3231_A1_PerSecond triggers alarm when seconds match
   rtc.clearAlarm(1);
-  rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond); 
+  rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
   #if !(BURST_SAMPLING && BURST_SAMPLING_ONE_SAMPLE)
     Timer1.initialize(SAMPLE_TIME);
     Timer1.attachInterrupt(triggerSampling); // Every time Timer1 goes off, calls triggerSampling
     attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
   #endif
   #if BURST_SAMPLING
+    noInterrupts();
     timeAtBurstSwitch = currentDateTime;
-    if (Serial) {
-      Serial.print(F("[BURST] Start write window at "));
-      Serial.print(timeAtBurstSwitch.hour()); Serial.print(':');
-      Serial.print(timeAtBurstSwitch.minute()); Serial.print(':');
-      Serial.println(timeAtBurstSwitch.second());
-      Serial.print(F("[BURST] WRITE_SECONDS=")); Serial.print(WRITE_SECONDS);
-      Serial.print(F(", SLEEP_SECONDS=")); Serial.println(SLEEP_SECONDS);
-    }
+    interrupts();
   #endif
 }
 
@@ -180,14 +149,6 @@ void loop() {
         DateTime endTime = rtc.now(); // endTime taken before flush
         outputFile.flush();
         secondsSinceFlush = 0;
-        if (Serial) {
-          Serial.print(F("[BURST] End write window at "));
-          Serial.print(endTime.hour()); Serial.print(':');
-          Serial.print(endTime.minute()); Serial.print(':');
-          Serial.println(endTime.second());
-          Serial.print("Elapsed time: ");
-          Serial.println(elapsed.totalseconds());
-        }
         enterBurstDeepSleep(endTime);
       }
     #endif
@@ -205,10 +166,6 @@ void loop() {
     }
 
     if (secondsSinceFlush >= FLUSH_INTERVAL_SECONDS) {
-      if (Serial) {
-        Serial.print(F("Flushing SD card at time "));
-        Serial.println(millis());
-      }
       outputFile.flush();
       secondsSinceFlush = 0;
     }
@@ -233,8 +190,10 @@ void performSensorReading() {
   // leading to millisecond overflow, while maintaining an error of +/- 1ms
   // An overflow more than 1000 is untouched so it can be discarded in postprocessing
   millisec = (millisec == 1000) ? 999 : millisec;
-
-  writeToOutputFile(currentDateTime, millisec, currentPressure, currentTemperature, currentVoltage);
+  noInterrupts();
+  DateTime date = currentDateTime;
+  interrupts();
+  writeToOutputFile(date, millisec, currentPressure, currentTemperature, currentVoltage);
 }
 
 int16_t getBatteryVoltage() {
@@ -254,28 +213,16 @@ void resetTimer() {
   secondsSinceFlush++;
   power_adc_enable();
   // millisAtInterrupt = millis();
-  currentDateTime = rtc.now();
-  if (Serial) {
-    Serial.print(F("Reset timer at: "));
-    Serial.print(currentDateTime.year());
-    Serial.print('/');
-    Serial.print(currentDateTime.month());
-    Serial.print('/');
-    Serial.print(currentDateTime.day());
-    Serial.print(' ');
-    Serial.print(currentDateTime.hour());
-    Serial.print(':');
-    Serial.print(currentDateTime.minute());
-    Serial.print(':');
-    Serial.println(currentDateTime.second());
-  }
+  DateTime now = rtc.now();
+  noInterrupts();
+  currentDateTime = now;
   #if BURST_SAMPLING
     elapsed = currentDateTime - timeAtBurstSwitch;
   #endif
+  interrupts();
   currentVoltage = getBatteryVoltage();
   #if !(BURST_SAMPLING && BURST_SAMPLING_ONE_SAMPLE)
     rtc.clearAlarm(1);
-    // rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
   #endif
   power_adc_disable();
 }
@@ -316,19 +263,12 @@ void makeFileName(char* fileName, char* serialNumber) {
     *startOfIt = '0' + (fileIndex / 10);
     *(startOfIt + 1) = '0' + (fileIndex % 10);
   }
-  
-  if (Serial) {
-    Serial.print(F("File name: "));
-    Serial.println(fileName);
-  }
 }
 
 void setFileTimestampOnce(File32& file) {
   DateTime now = rtc.now();
-  if (!file.timestamp(T_CREATE | T_WRITE | T_ACCESS, now.year(), now.month(), now.day(),
-                      now.hour(), now.minute(), now.second())) {
-    if (Serial) Serial.println(F("Failed to set initial file timestamp"));
-  }
+  file.timestamp(T_CREATE | T_WRITE | T_ACCESS, now.year(), now.month(), now.day(),
+                 now.hour(), now.minute(), now.second());
 }
 
 void writeToOutputFile(DateTime now, int millisec, int32_t pressure, 
@@ -396,7 +336,6 @@ void writeToOutputFile(DateTime now, int millisec, int32_t pressure,
     makeFileName(fileName, serialNumber);
 
     if (!outputFile.open(fileName, O_WRITE | O_CREAT | O_AT_END)) {
-      if (Serial) Serial.println(F("error opening datalog-case2"));
       error(ERROR_FILE_OPEN_FAILED);
       return;
     }
@@ -435,7 +374,6 @@ void delayStartDeepSleepLoop() {
     rtc.clearAlarm(1);
     return;
   }
-  if (Serial) Serial.println(F("Entering delay deep sleep"));
 
   // Loop until start date is reached
   while (true) {
@@ -479,7 +417,10 @@ void enterBurstDeepSleep(DateTime endTime) {
   if (now.unixtime() >= endTime.unixtime() + SLEEP_SECONDS - 1) {
     timeAtBurstSwitch = now;
     resetTimer();
-    rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
+    noInterrupts();
+    DateTime date = currentDateTime + TimeSpan(1);
+    interrupts();
+    rtc.setAlarm1(date, DS3231_A1_PerSecond);
     attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
     #if !BURST_SAMPLING_ONE_SAMPLE
       Timer1.restart();
@@ -489,12 +430,6 @@ void enterBurstDeepSleep(DateTime endTime) {
     return;
   }
   DateTime nextWake(endTime + TimeSpan(SLEEP_SECONDS));
-  if (Serial) {
-    Serial.print(F("[BURST] Next wake scheduled at "));
-    Serial.print(nextWake.hour()); Serial.print(':');
-    Serial.print(nextWake.minute()); Serial.print(':');
-    Serial.println(nextWake.second());
-  }
   rtc.clearAlarm(1);
   rtc.setAlarm1(nextWake, DS3231_A1_Date);
   attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), burstSleepInterrupt, FALLING);
@@ -510,7 +445,10 @@ void enterBurstDeepSleep(DateTime endTime) {
   timeAtBurstSwitch = rtc.now();
   resetTimer();
   #if !BURST_SAMPLING_ONE_SAMPLE
-    rtc.setAlarm1(currentDateTime + TimeSpan(1), DS3231_A1_PerSecond);
+    noInterrupts();
+    DateTime date = currentDateTime + TimeSpan(1);
+    interrupts();
+    rtc.setAlarm1(date, DS3231_A1_PerSecond);
     attachInterrupt(digitalPinToInterrupt(RTC_INTERRUPT_PIN), resetTimerInterrupt, FALLING);
     Timer1.restart();
     Timer1.attachInterrupt(triggerSampling);

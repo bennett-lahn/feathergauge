@@ -148,7 +148,7 @@ extern RTC_DS3231 rtc;
 extern File32 outputFile;          // Used to open, write to, and close files on the SD card
 
 extern DateTime timeAtBurstSwitch; // Time burst switched between sleep and record
-extern DateTime currentDateTime;   // Time of current second
+extern DateTime currentDateTime;   // Time of current second; read/write from main must use noInterrupts()/interrupts()
 extern int16_t currentVoltage;     // Voltage of battery, updated every second; fixed point X.XX
 
 // Number of seconds elapsed since the last SD flush (incremented in resetTimer())
@@ -180,6 +180,7 @@ extern bool ledWarmupManualPulsePending;
  * Inputs:
  *   - None (uses globals: currentDateTime, millisAtInterrupt, currentVoltage)
  * Usage: Called when `samplingFlag` is set or in one-sample burst mode.
+ * Note: currentDateTime is read with interrupts disabled to avoid races with resetTimerInterrupt().
  */
 void performSensorReading();
 
@@ -197,6 +198,7 @@ int16_t getBatteryVoltage();
  * Purpose: Synchronize timer-driven sampling to the RTC second tick; updates timekeeping and schedules next RTC alarm.
  * Inputs: None
  * Usage: Call after every RTC interrupt or when starting new sampling windows.
+ * Note: Updates currentDateTime under noInterrupts() after rtc.now() to avoid races with resetTimerInterrupt().
  */
 void resetTimer();
 
@@ -294,8 +296,8 @@ void triggerSampling();
 /**
  * resetTimerInterrupt (ISR context)
  * Purpose: Flag main loop to resynchronize timers on each RTC second tick. Also updates 
- * millisAtInterrupt and pre-emptively setting currentDateTime to the next second, pending actual
- * I2C transaction in resetTimer()
+ * millisAtInterrupt and pre-emptively increments currentDateTime by one second, pending actual
+ * I2C correction in resetTimer(). Main code must read currentDateTime with interrupts disabled.
  * 
  * Inputs: None
  */
