@@ -88,7 +88,6 @@ void setup() {
     return;
   }
 
-  char fileName[FILENAME_LENGTH];
   // Temporary test mode: append to a known pre-existing file on the SD card.
   char serialNumber[16];
   EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber); 
@@ -103,7 +102,9 @@ void setup() {
     outputFile.print(',');
     outputFile.print(F("Timestamp,Pressure [mbar],Temp [deg C],Battery [VDC]"));
     outputFile.println();
-    outputFile.sync();
+    if (!outputFile.sync()) {
+      recoverSdCard();
+    }
   } else {
     error(ERROR_FILE_OPEN_FAILED);
   }
@@ -147,8 +148,11 @@ void loop() {
           performSensorReading();
         #endif
         DateTime endTime = rtc.now(); // endTime taken before flush
-        outputFile.flush();
-        secondsSinceFlush = 0;
+        if (!outputFile.sync()) {
+          recoverSdCard();
+        } else {
+          secondsSinceFlush = 0;
+        }
         enterBurstDeepSleep(endTime);
       }
     #endif
@@ -166,8 +170,11 @@ void loop() {
     }
 
     if (secondsSinceFlush >= FLUSH_INTERVAL_SECONDS) {
-      outputFile.flush();
-      secondsSinceFlush = 0;
+      if (!outputFile.sync()) {
+        recoverSdCard();
+      } else {
+        secondsSinceFlush = 0;
+      }
     }
     // Sleep until next sampling time or interrupt from timers/RTC
     // When waking from burst sleep, this idle command means the MCU will sleep until the next ms, 
@@ -326,10 +333,11 @@ void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure,
   const uint32_t projectedSize = outputFile.size() + static_cast<uint32_t>(rowLength);
 
   if (projectedSize > FILE_ROLLOVER_SIZE_BYTES) {
-    outputFile.sync();
+    if (!outputFile.sync()) {
+      recoverSdCard();
+    }
     outputFile.close();
 
-    char fileName[FILENAME_LENGTH];
     char serialNumber[SERIAL_NUMBER_LENGTH];
     EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
     makeFileName(fileName, serialNumber);
@@ -345,10 +353,38 @@ void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure,
     outputFile.print(',');
     outputFile.print(F("Timestamp,Pressure [mbar],Temp [deg C],Battery [VDC]"));
     outputFile.println();
-    outputFile.sync();
+    if (!outputFile.sync()) {
+      recoverSdCard();
+    }
   }
 
   outputFile.write(reinterpret_cast<const uint8_t*>(rowBuffer), rowLength);
+  if (outputFile.getWriteError()) {
+    recoverSdCard();
+    outputFile.clearWriteError();
+  }
+}
+
+void recoverSdCard() {
+  delay(10);
+  outputFile.close();
+  bool recovered = false;
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(SD_CARD_SELECT_PIN, HIGH); // Deselect SPI bus
+    if (!sd.begin(SD_CARD_SELECT_PIN, SPI_HALF_SPEED)) {
+      delay(250);
+      continue;
+    }
+    if (!outputFile.open(fileName, O_WRITE | O_APPEND | O_AT_END)) {
+      delay(250);
+      continue;
+    }
+    recovered = true;
+    break;
+  }
+  if (!recovered) {
+    error(ERROR_SD_CARD_FAILED);
+  }
 }
 
 // ===========================
@@ -405,7 +441,9 @@ void delayStartDeepSleepLoop() {
     // Use `now` (current RTC time) and `currentVoltage` directly - currentDateTime and the global
     // voltage are not updated during deep sleep, so they cannot be used here
     writeToOutputFile(now, 0, delayPressure, delayTemperature, currentVoltage);
-    outputFile.flush();
+    if (!outputFile.sync()) {
+      recoverSdCard();
+    }
     rtc.clearAlarm(1);
   }
 }

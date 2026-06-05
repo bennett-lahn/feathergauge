@@ -179,6 +179,9 @@ extern uint8_t ledWarmupToggleCount;
 // True if LED should be toggled only once (blocking for LED_WARMUP_MANUAL_FLASH_DELAY_MS) during start-up
 extern bool ledWarmupManualPulsePending;
 
+// Name for currently open file
+char fileName[FILENAME_LENGTH];
+
 // ===========================
 // FUNCTION DECLARATIONS
 // ===========================
@@ -243,6 +246,15 @@ void setFileTimestampOnce(File32& file);
  * Usage: Call to write sensor reading to file.
  */
 void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure, int32_t temperature, int16_t batteryVoltage);
+
+/**
+ * recoverSdCard
+ * Purpose: Reset SD card state and reopen the current file in an attempt to recover from SD card error.
+ * Inputs: None
+ * Usage: Wherever sd.sync()/flush() or outputFile.write() returns false within loop().
+ * If the function cannot recover from the failure, it enters a error() infinite loop.
+ */
+void recoverSdCard();
 
 /**
  * enterDelayDeepSleep
