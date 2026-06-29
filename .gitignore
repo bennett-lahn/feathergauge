@@ -47,6 +47,7 @@ env.bak/
 venv.bak/
 data_analysis/
 arduino_sandbox/
+.pio
 
 # IDE files
 .vscode/

@@ -7,15 +7,25 @@
 // ===========================
 // GLOBAL VARIABLE INITIALIZATION
 // ===========================
-CustomMS5803 pressureSensor;
+
+#ifdef NATIVE_TEST
+  #include "mock_registry.h"
+  CustomMS5803 pressureSensor;
+  RTC_DS3231   rtc;
+  SdFat32      sd;
+  File32       outputFile;
+#else
+  CustomMS5803 pressureSensor;
+  RTC_DS3231   rtc;
+  SdFat32      sd;
+  File32       outputFile;
+#endif
+
+char fileName[FILENAME_LENGTH];
 
 #if BURST_SAMPLING
   TimeSpan elapsed;
 #endif
-
-RTC_DS3231 rtc;
-SdFat32 sd;
-File32 outputFile;           // Used to open, write to, and close files on the SD card
 
 DateTime timeAtBurstSwitch;  // Time burst switched between sleep and record
 DateTime currentDateTime;    // Time of current second; read/write from main must use noInterrupts()/interrupts()
@@ -57,10 +67,10 @@ void setup() {
   Wire.begin();
   Wire.setClock(TWI_CLOCK_SPEED);
 
-  // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors 
+  // DS3231 SQW pin requires an external pull-up resistor. The internal pull-up resistors
   // included in the 32u4 are too weak for square wave oscillator output but interrupts still work.
   pinMode(RTC_INTERRUPT_PIN, INPUT_PULLUP);
-  
+ 
   if (!rtc.begin()) {
     error(2);
     return;
@@ -71,28 +81,27 @@ void setup() {
   rtc.writeSqwPinMode(DS3231_OFF);
 
   if (rtc.lostPower()) {
-    // This will adjust to the date and time at compilation; recompile everytime MCU is 
-    // flashed for accuracy. If the DS3231 has had continous MCU/button battery power since 
+    // This will adjust to the date and time at compilation; recompile everytime MCU is
+    // flashed for accuracy. If the DS3231 has had continous MCU/button battery power since
     // last program flash, the time will not be changed.
 
-    // **Relying on this to set the correct time is a bad idea**, but it's better than 
+    // **Relying on this to set the correct time is a bad idea**, but it's better than
     // no date at all
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
-  
+ 
   pressureSensor.reset();
   pressureSensor.begin();
 
-  if (!sd.begin(SD_CARD_SELECT_PIN, SPI_HALF_SPEED)) { 
+  if (!sd.begin(SD_CARD_SELECT_PIN, SPI_HALF_SPEED)) {
     error(ERROR_SD_CARD_FAILED);
     return;
   }
 
-  // Temporary test mode: append to a known pre-existing file on the SD card.
   char serialNumber[16];
-  EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber); 
-  makeFileName(fileName, serialNumber);
-  
+  EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
+  makeFileName(fileName, serialNumber, rtc.now());
+ 
   outputFile.open(fileName, O_WRITE | O_CREAT | O_AT_END); // Opens .csv file
 
   if (outputFile) {
@@ -158,7 +167,7 @@ void loop() {
     #endif
 
     if (resetTimerFlag) {
-      resetTimer();
+      resetTimer(true);
       resetTimerFlag = false;
     }
 
@@ -177,7 +186,7 @@ void loop() {
       }
     }
     // Sleep until next sampling time or interrupt from timers/RTC
-    // When waking from burst sleep, this idle command means the MCU will sleep until the next ms, 
+    // When waking from burst sleep, this idle command means the MCU will sleep until the next ms,
     // then check the burst flag
     setForeverIdleSleep();
 }
@@ -185,9 +194,10 @@ void loop() {
 // ===========================
 // DATA ACQUISITION FUNCTIONS
 // ===========================
+
 void performSensorReading() {
   int32_t currentTemperature, currentPressure;
-  pressureSensor.getSensorReadings(ADC_4096, ADC_2048, &currentPressure, 
+  pressureSensor.getSensorReadings(ADC_4096, ADC_2048, &currentPressure,
                                 &currentTemperature);
 
   updateLedWarmupIndicator();
@@ -196,30 +206,22 @@ void performSensorReading() {
   unsigned long irqMillis = millisAtInterrupt;
   DateTime date = currentDateTime;
   interrupts();
-  uint16_t millisec = (uint16_t)(nowMs - irqMillis);
-
-  // This eliminates 99% of cases where the millisecond timer and RTC are exactly in sync, 
-  // leading to millisecond overflow, while maintaining an error of +/- 1ms
-  // An overflow more than 1000 is untouched so it can be discarded in postprocessing
-  millisec = (millisec == 1000) ? 999 : millisec;
+  uint16_t millisec = normalizeMillisec((uint16_t)(nowMs - irqMillis));
   writeToOutputFile(date, millisec, currentPressure, currentTemperature, currentVoltage);
 }
 
 int16_t getBatteryVoltage() {
-  int32_t sensorValue = analogRead(BATTERY_VOLTAGE_PIN);
-
-  // 1. Multiply by scaled constant.
-  // 2. Add 32768 (half of 65536) to ensure proper rounding.
-  // 3. Bit-shift right by 16 (equivalent to dividing by 65536).
-  return (int16_t) (((sensorValue * BATT_FAST_MULT) + 32768) >> 16);
+  return calculateBatteryVoltage(analogRead(BATTERY_VOLTAGE_PIN));
 }
 
 // ===========================
 // RTC/TIME/SD UTILITIES
 // ===========================
 
-void resetTimer() {
-  secondsSinceFlush++;
+void resetTimer(bool fromISR) {
+  if (fromISR) {
+    secondsSinceFlush++;
+  }
   power_adc_enable();
   DateTime now = rtc.now();
   noInterrupts();
@@ -235,11 +237,9 @@ void resetTimer() {
   power_adc_disable();
 }
 
-
-void makeFileName(char* fileName, char* serialNumber) {
+void makeFileName(char* fileName, char* serialNumber, DateTime now) {
   // Format: WG-00_YYYY-MM-DD_IT-XX.csv (ISO 8601 date) (e.g., WG-08_2026-05-04_IT-00.csv)
   char* curr = fileName;
-  DateTime now = rtc.now();
   *curr++ = 'W';
   *curr++ = 'G';
   *curr++ = '-';
@@ -279,10 +279,9 @@ void setFileTimestampOnce(File32& file) {
                  now.hour(), now.minute(), now.second());
 }
 
-void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure, 
-                       int32_t temperature, int16_t batteryVoltage) {
-  char rowBuffer[ROW_BUFFER_SIZE];
-  char* ptr = rowBuffer;
+size_t formatDataRow(char* buf, DateTime now, uint16_t millisec,
+                     int32_t pressure, int32_t temperature, int16_t batteryVoltage) {
+  char* ptr = buf;
 
   // Date: YYYY/M/D
   appendInt(ptr, (int)now.year());
@@ -329,7 +328,15 @@ void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure,
   *ptr++ = '\r';
   *ptr++ = '\n';
 
-  const size_t rowLength = static_cast<size_t>(ptr - rowBuffer);
+  return static_cast<size_t>(ptr - buf);
+}
+
+void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure,
+                       int32_t temperature, int16_t batteryVoltage) {
+  char rowBuffer[ROW_BUFFER_SIZE];
+  const size_t rowLength = formatDataRow(rowBuffer, now, millisec, pressure,
+                                         temperature, batteryVoltage);
+
   const uint32_t projectedSize = outputFile.size() + static_cast<uint32_t>(rowLength);
 
   if (projectedSize > FILE_ROLLOVER_SIZE_BYTES) {
@@ -340,7 +347,7 @@ void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure,
 
     char serialNumber[SERIAL_NUMBER_LENGTH];
     EEPROM.get(SERIAL_NUMBER_ADDRESS, serialNumber);
-    makeFileName(fileName, serialNumber);
+    makeFileName(fileName, serialNumber, now);
 
     if (!outputFile.open(fileName, O_WRITE | O_CREAT | O_AT_END)) {
       error(ERROR_FILE_OPEN_FAILED);
@@ -370,6 +377,9 @@ void recoverSdCard() {
   outputFile.close();
   bool recovered = false;
   for (int i = 0; i < 3; i++) {
+    #ifdef NATIVE_TEST
+      mockReg.audit.recoverAttempts++;
+    #endif
     digitalWrite(SD_CARD_SELECT_PIN, HIGH); // Deselect SPI bus
     if (!sd.begin(SD_CARD_SELECT_PIN, SPI_HALF_SPEED)) {
       delay(250);
@@ -390,7 +400,6 @@ void recoverSdCard() {
 // ===========================
 // SLEEP MANAGEMENT
 // ===========================
-
 
 // When time is set into the future, no sensor readings occur
 void delayStartDeepSleepLoop() {
@@ -426,17 +435,13 @@ void delayStartDeepSleepLoop() {
       return; // Exit loop and continue with setup()
     }
 
-    // digitalWrite(LED_PIN, HIGH);
-    // delay(ERROR_BLINK_DELAY);
-    // digitalWrite(LED_PIN, LOW);
-    
     // Not yet at start date, log one sample and go back to sleep
     power_adc_enable();
     int32_t delayPressure, delayTemperature;
     pressureSensor.getSensorReadings(ADC_4096, ADC_2048, &delayPressure, &delayTemperature);
     updateLedWarmupIndicator();
     // Perform voltage reading after sensor reading to give ADC time to settle
-    currentVoltage = getBatteryVoltage(); 
+    currentVoltage = getBatteryVoltage();
     power_adc_disable();
     // Use `now` (current RTC time) and `currentVoltage` directly - currentDateTime and the global
     // voltage are not updated during deep sleep, so they cannot be used here
@@ -453,7 +458,7 @@ void enterBurstDeepSleep(DateTime endTime) {
   DateTime now = rtc.now();
   if (now.unixtime() >= endTime.unixtime() + SLEEP_SECONDS - 1) {
     timeAtBurstSwitch = now;
-    resetTimer();
+    resetTimer(false);
     noInterrupts();
     DateTime date = currentDateTime + TimeSpan(1);
     interrupts();
@@ -463,7 +468,6 @@ void enterBurstDeepSleep(DateTime endTime) {
       Timer1.restart();
       Timer1.attachInterrupt(triggerSampling);
     #endif
-    // Timer1.stop();
     return;
   }
   DateTime nextWake(endTime + TimeSpan(SLEEP_SECONDS));
@@ -482,7 +486,7 @@ void enterBurstDeepSleep(DateTime endTime) {
   Wire.setClock(TWI_CLOCK_SPEED);
   rtc.clearAlarm(1);
   timeAtBurstSwitch = rtc.now();
-  resetTimer();
+  resetTimer(false);
   #if !BURST_SAMPLING_ONE_SAMPLE
     noInterrupts();
     DateTime date = currentDateTime + TimeSpan(1);
@@ -495,9 +499,9 @@ void enterBurstDeepSleep(DateTime endTime) {
 }
 
 void setForeverIdleSleep() {
-  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer 
+  // ADC, timer 3, and timer 4 are set to ON so LowPower library doesn't turn them back on afer
   // sleep, they are already off
-  LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF, 
+  LowPower.idle(SLEEP_FOREVER, ADC_ON, TIMER4_ON, TIMER3_ON, TIMER1_ON, TIMER0_ON, SPI_OFF, USART1_OFF,
                 TWI_ON, USB_OFF);
 }
 
@@ -505,19 +509,41 @@ void setForeverIdleSleep() {
 // ERRORS/TROUBLESHOOTING
 // ===========================
 
-void error (uint8_t errno) {
+void error(uint8_t errcode) {
+#ifdef NATIVE_TEST
+  mockReg.audit.lastError   = errcode;
+  mockReg.audit.errorCalled = true;
+  throw TestAbort{errcode};
+#else
   while (1) {
-    uint8_t blinkCount; // Counts error blinks
-    for (blinkCount = 0; blinkCount < errno; blinkCount++) {
+    uint8_t blinkCount;
+    for (blinkCount = 0; blinkCount < errcode; blinkCount++) {
       digitalWrite(LED_PIN, HIGH);
       delay(ERROR_BLINK_DELAY);
       digitalWrite(LED_PIN, LOW);
       delay(ERROR_BLINK_DELAY);
     }
-    for (blinkCount = errno; blinkCount < ERROR_BLINK_CYCLE; blinkCount++) {
+    for (blinkCount = errcode; blinkCount < ERROR_BLINK_CYCLE; blinkCount++) {
       delay(ERROR_PAUSE_DELAY);
     }
   }
+#endif
+}
+
+uint8_t computeWarmupFlashCount(uint32_t availableReadings, bool& useManualPulse) {
+  uint8_t flashCount = LED_WARMUP_DEFAULT_FLASHES;
+  useManualPulse = false;
+  while (flashCount > 1 && ((uint32_t)flashCount * 2) > availableReadings) {
+    flashCount /= 2;
+    if (flashCount == 0) {
+      flashCount = 1;
+      break;
+    }
+  }
+  if (((uint32_t)flashCount * 2) > availableReadings) {
+    useManualPulse = true;
+  }
+  return flashCount;
 }
 
 void configureLedWarmupIndicator() {
@@ -528,21 +554,11 @@ void configureLedWarmupIndicator() {
 #if BURST_SAMPLING_ONE_SAMPLE
   ledWarmupManualPulsePending = true;
 #else
-  uint8_t flashCount = LED_WARMUP_DEFAULT_FLASHES;
   bool useManualPulse = false;
+  uint8_t flashCount = LED_WARMUP_DEFAULT_FLASHES;
   #if BURST_SAMPLING
     uint32_t availableReadings = WRITE_SECONDS * (uint32_t)SAMPLE_FREQ;
-    // Calculate # of flashes that fit within first sampling window
-    while (flashCount > 1 && ((uint32_t)flashCount * 2) > availableReadings) {
-      flashCount /= 2;
-      if (flashCount == 0) {
-        flashCount = 1;
-        break;
-      }
-    }
-    if (((uint32_t)flashCount * 2) > availableReadings) {
-      useManualPulse = true;
-    }
+    flashCount = computeWarmupFlashCount(availableReadings, useManualPulse);
   #endif
   if (useManualPulse) {
     ledWarmupManualPulsePending = true;

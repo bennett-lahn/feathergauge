@@ -11,23 +11,30 @@
 
 #include "user_config.h"
 
-#include <Wire.h>
-#include <SPI.h>
-#include <SdFat.h>
-#include <EEPROM.h>
-#include <avr/power.h>
-#include <TimerOne.h>
-#include <LowPower.h>
-
-// INTERNAL WARNING - Ignore before January 1st, 2037
-// RTClib uses a 32-bit variable to track time. After January 19th 2038, this value will overflow
-// and the library will have to be updated to use 64-bit variables to continue using it.
-// I will be very happy if this code is still being used in 2038. :) 
-#include <RTClib.h>
-
-#if USE_NEW_SENSOR
-  #include "MS5837.h"
+#ifdef NATIVE_TEST
+  #include "mock_arduino_env.h"
+  #include "mock_wire.h"
+  #include "mock_sd.h"
+  #include "mock_eeprom.h"
+  #include "mock_timerone.h"
+  #include "mock_lowpower.h"
+  #include "mock_rtc.h"
+  #include "mock_ms5803.h"
 #else
+  #include <Wire.h>
+  #include <SPI.h>
+  #include <SdFat.h>
+  #include <EEPROM.h>
+  #include <avr/power.h>
+  #include <TimerOne.h>
+  #include <LowPower.h>
+
+  // INTERNAL WARNING - Ignore before January 1st, 2037
+  // RTClib uses a 32-bit variable to track time. After January 19th 2038, this value will overflow
+  // and the library will have to be updated to use 64-bit variables to continue using it.
+  // I will be very happy if this code is still being used in 2038. :)
+  #include <RTClib.h>
+
   #include "SparkFun_MS5803_I2C.h"
 #endif
 
@@ -35,7 +42,6 @@
 // CLASSES
 // ===========================
 
-class MS5837;
 class MS5803;
 
 // Create custom MS5803 class to override sensorWait function for better power management
@@ -143,12 +149,6 @@ constexpr uint8_t SERIAL_NUMBER_ADDRESS          = 0;         // EEPROM address 
   const int START_MINUTE = 0;
 #endif
 
-#if USE_NEW_SENSOR
-  extern MS5837 newSensor;
-#else
-  extern MS5803 oldSensor;
-#endif
-
 #if BURST_SAMPLING
   extern TimeSpan elapsed;
 #endif
@@ -160,7 +160,7 @@ extern DateTime timeAtBurstSwitch; // Time burst switched between sleep and reco
 extern DateTime currentDateTime;   // Time of current second; read/write from main must use noInterrupts()/interrupts()
 extern int16_t currentVoltage;     // Voltage of battery, updated every second; fixed point X.XX
 
-// Number of seconds elapsed since the last SD flush (incremented in resetTimer())
+// Number of seconds elapsed since the last SD flush (incremented in resetTimer() only when called from the ISR path)
 extern uint8_t secondsSinceFlush;
 
 // Sampling flag for ISR to main loop communication
@@ -180,11 +180,23 @@ extern uint8_t ledWarmupToggleCount;
 extern bool ledWarmupManualPulsePending;
 
 // Name for currently open file
-char fileName[FILENAME_LENGTH];
+extern char fileName[FILENAME_LENGTH];
 
 // ===========================
 // FUNCTION DECLARATIONS
 // ===========================
+
+/**
+ * setup
+ * Purpose: Initialize all peripherals and open the output file. Called once by the Arduino runtime.
+ */
+void setup();
+
+/**
+ * loop
+ * Purpose: Main firmware loop - handles flag-driven sampling, timer resets, and periodic SD flushes.
+ */
+void loop();
 
 /**
  * performSensorReading
@@ -197,6 +209,18 @@ char fileName[FILENAME_LENGTH];
 void performSensorReading();
 
 /**
+ * calculateBatteryVoltage
+ * Purpose: Convert a raw ADC reading to a battery voltage using the fixed-point multiplier.
+ * Inputs:
+ *   - adcReading: int32_t - raw ADC value (0..1023).
+ * Returns: int16_t - battery voltage in hundredths of volts (X.XX fixed-point).
+ * Pure function - no hardware access.
+ */
+inline int16_t calculateBatteryVoltage(int32_t adcReading) {
+    return (int16_t)(((adcReading * BATT_FAST_MULT) + 32768) >> 16);
+}
+
+/**
  * getBatteryVoltage
  * Purpose: Measure battery voltage via ADC on `BATTERY_VOLTAGE_PIN` using divider ratio.
  * Inputs: None
@@ -206,13 +230,37 @@ void performSensorReading();
 int16_t getBatteryVoltage();
 
 /**
+ * normalizeMillisec
+ * Purpose: Clamp a millisecond value of exactly 1000 to 999 to avoid overflow in timestamp output.
+ *          Values outside [0..999] other than exactly 1000 are passed through unchanged so that
+ *          large overruns (>1000) can be detected and discarded in post-processing.
+ * Pure function - no hardware access.
+ */
+inline uint16_t normalizeMillisec(uint16_t ms) {
+    return (ms == 1000) ? 999 : ms;
+}
+
+/**
+ * computeWarmupFlashCount
+ * Purpose: Calculate how many LED flashes fit within the first burst write window.
+ *          Halves the default count until it fits; sets useManualPulse if even one flash won't fit.
+ * Inputs:
+ *   - availableReadings: uint32_t - total sensor readings in the write window (WRITE_SECONDS * SAMPLE_FREQ).
+ *   - useManualPulse: bool& (output) - set true when no automatic flash sequence fits.
+ * Returns: uint8_t - number of flashes to use (each flash = 2 toggles).
+ * Pure function - no hardware access.
+ */
+uint8_t computeWarmupFlashCount(uint32_t availableReadings, bool& useManualPulse);
+
+/**
  * resetTimer
  * Purpose: Synchronize timer-driven sampling to the RTC second tick; updates timekeeping and schedules next RTC alarm.
- * Inputs: None
- * Usage: Call after every RTC interrupt or when starting new sampling windows.
+ * Inputs: fromISR - when true (the normal 1 Hz heartbeat path) increments secondsSinceFlush.
+ *                   Pass false for manual calls (e.g. re-arming after burst sleep wakeup) so the
+ *                   flush counter only advances on real timekeeping ticks.
  * Note: Updates currentDateTime under noInterrupts() after rtc.now() to avoid races with resetTimerInterrupt().
  */
-void resetTimer();
+void resetTimer(bool fromISR);
 
 /**
  * makeFileName
@@ -220,9 +268,10 @@ void resetTimer();
  * Inputs:
  *   - fileName: char* (output) - caller-provided buffer of length FILENAME_LENGTH.
  *   - serialNumber: char* (input) - serial number string loaded from EEPROM.
+ *   - now: DateTime (input) - current date used to build the filename.
  * Usage: Call once during setup before opening the SD file.
  */
-void makeFileName(char* fileName, char* serialNumber);
+void makeFileName(char* fileName, char* serialNumber, DateTime now);
 
 /**
  * setFileTimestampOnce
@@ -233,6 +282,22 @@ void makeFileName(char* fileName, char* serialNumber);
  *        from the RTC, without registering a callback that runs again on later sync/write operations.
  */
 void setFileTimestampOnce(File32& file);
+
+/**
+ * formatDataRow
+ * Purpose: Serialize one sensor reading into a CSV row, assuming fixed-point ASCII formatting.
+ * Inputs:
+ *   - buf: char* (output) - caller-provided buffer of at least ROW_BUFFER_SIZE bytes.
+ *   - now: DateTime - timestamp (date and time to seconds).
+ *   - millisec: uint16_t - millisecond offset within the second (0..999, or 1000+ for overrun).
+ *   - pressure: int32_t - pressure in tenths of mbar (XXXX.X).
+ *   - temperature: int32_t - temperature in hundredths of degrees C (XX.XX).
+ *   - batteryVoltage: int16_t - battery voltage in hundredths of volts (X.XX).
+ * Returns: size_t - number of bytes written into buf (does not include a null terminator).
+ * Pure function - no file I/O or hardware access.
+ */
+size_t formatDataRow(char* buf, DateTime now, uint16_t millisec,
+                     int32_t pressure, int32_t temperature, int16_t batteryVoltage);
 
 /**
  * writeToOutputFile
@@ -257,12 +322,13 @@ void writeToOutputFile(DateTime now, uint16_t millisec, int32_t pressure, int32_
 void recoverSdCard();
 
 /**
- * enterDelayDeepSleep
- * Purpose: Configure RTC alarms for the target start date/time and enter deep sleep until then.
+ * delayStartDeepSleepLoop
+ * Purpose: Configure RTC alarms for the target start date/time and loop in deep sleep until then.
+ *          Writes one sample per RTC alarm interval while waiting.
  * Inputs: None
- * Usage: Used when DELAY_START is enabled.
+ * Usage: Used when DELAY_START is enabled; called once from setup().
  */
-void enterDelayDeepSleep();
+void delayStartDeepSleepLoop();
 
 /**
  * enterBurstDeepSleep
@@ -288,7 +354,7 @@ void setForeverIdleSleep();
  *   - errno: uint8_t — error code and blink count.
  * Usage: Call on fatal conditions; function does not return.
  */
-void error(uint8_t errno);
+void error(uint8_t errcode);
 
 /**
  * configureLedWarmupIndicator

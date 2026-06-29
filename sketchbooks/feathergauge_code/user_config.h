@@ -1,6 +1,8 @@
 #ifndef USER_CONFIG_H
 #define USER_CONFIG_H
 
+#include <stdint.h>
+
 // ===========================
 // USER DEFINED FLAGS:
 // Please set the following three flags according to your sensor type and preferred collection type.
@@ -9,16 +11,22 @@
 
 // Set to false for rapid start
 // Set to true for delayed start, using selected start date
-#define DELAY_START                  false
+#ifndef DELAY_START
+  #define DELAY_START                  false
+#endif
 
 // Set to true for burst sampling
 // Set to false for constant sampling
-#define BURST_SAMPLING               false
+#ifndef BURST_SAMPLING
+  #define BURST_SAMPLING               false
+#endif
 
 // Set to true if only one sample should be taken at each burst
 // Set to false if samples should be taken according to SAMPLE_FREQ during the
 // write period
-#define BURST_SAMPLING_ONE_SAMPLE    false
+#ifndef BURST_SAMPLING_ONE_SAMPLE
+  #define BURST_SAMPLING_ONE_SAMPLE    false
+#endif
 
 // ===========================
 // USER INPUTS:
